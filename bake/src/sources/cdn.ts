@@ -85,7 +85,11 @@ export class CdnSource implements GameSource {
   }
 
   private loadTables(): Promise<Tables> {
-    this.tables ??= this.initTables();
+    // A shared lookup forgets a failure: one network stall must not fail every later model.
+    this.tables ??= this.initTables().catch((e) => {
+      this.tables = undefined;
+      throw e;
+    });
     return this.tables;
   }
 
@@ -142,7 +146,10 @@ export class CdnSource implements GameSource {
 
   /** The stored (BLTE) form of an encoded key: an archive slice, else a loose file. */
   private async fetchEncoded(ek: string, cc: Map<string, string[]>): Promise<Buffer> {
-    this.indexes ??= this.archiveIndexes(cc);
+    this.indexes ??= this.archiveIndexes(cc).catch((e) => {
+      this.indexes = undefined;
+      throw e;
+    });
     const key = Buffer.from(ek, "hex");
     for (const { name, index } of await this.indexes) {
       const hit = index.lookup(key);
@@ -165,7 +172,10 @@ export class CdnSource implements GameSource {
         return body;
       });
       return parseTactKeys(b.toString("utf8"));
-    })();
+    })().catch((e) => {
+      this.tactKeys = undefined;
+      throw e;
+    });
     return this.tactKeys;
   }
 

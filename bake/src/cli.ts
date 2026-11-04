@@ -1,3 +1,4 @@
+import { untilOk } from "./lib/retry";
 import { appendFileSync } from "node:fs";
 import { type BakeContext, isUpToDate, openContext } from "./bake/context";
 import { runCatalog } from "./commands/catalog";
@@ -140,7 +141,11 @@ async function run(args: Args): Promise<void> {
     }
     log(`bake ${u.id}`);
     try {
-      const rec = await u.bake(ctx);
+      // A failure here is nearly always a network stall, and each object already uploaded
+      // is skipped on the next try, so trying again costs little and saves a whole rerun.
+      const rec = await untilOk(() => u.bake(ctx), (r) => r.status === "ok", 3, 15_000, (r, next) =>
+        log(`  retrying ${u.id} (try ${next}): ${r.error}`),
+      );
       if (rec.status === "ok") {
         baked++;
         const s = rec.sizes ?? {};

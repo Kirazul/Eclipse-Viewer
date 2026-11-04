@@ -133,6 +133,7 @@ export class R2Store implements Store {
     this.bucket = opts.bucket ?? R2.bucket;
     this.client = new S3Client({
       region: "auto",
+      maxAttempts: 6,
       endpoint: opts.endpoint ?? R2.endpoint,
       forcePathStyle: true,
       credentials: { accessKeyId, secretAccessKey },
