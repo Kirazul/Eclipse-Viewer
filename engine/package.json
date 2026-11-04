@@ -1,4 +1,5 @@
 { "name": "@eclipse/engine", "version": "0.1.0", "private": true, "type": "module",
+  "scripts": { "copy-public": "node scripts/copy-basis.mjs", "typecheck": "tsc -p tsconfig.json" },
   "exports": { ".": "./src/index.ts", "./api": "./src/api.ts", "./stores": "./src/stores.ts" },
   "dependencies": { "@eclipse/format": "workspace:*", "three": "0.180.0", "camera-controls": "3.1.2",
     "detect-gpu": "5.0.70", "meshoptimizer": "1.3.0", "nanostores": "1.5.5", "mediabunny": "1.65.1",

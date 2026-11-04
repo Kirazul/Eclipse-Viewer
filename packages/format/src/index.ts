@@ -31,7 +31,11 @@ export interface SubmeshExtras {
   hash: number;
   /** Geoset id = group*100 + value. */
   geoset: number;
-  /** Texture units in retail order. `tex` indexes ModelManifest.textures; -1 = none. */
+  /**
+   * Texture units in retail order. `tex` indexes ModelManifest.textures; -1 = none.
+   * `uvSet`: 0 TEXCOORD_0, 1 TEXCOORD_1, 2 sphere map (the shader computes it). The
+   * shader id implies it; retail models have no explicit UV-set table.
+   */
   units: { tex: number; uvSet: number; wrapS: boolean; wrapT: boolean; uvAnim: number }[];
   /** Retail M2 batch shader id. */
   shader: number;
@@ -122,19 +126,52 @@ export interface ModelManifest {
   /** Computed from the mesh: retail headers can't be trusted. */
   bounds: { min: Vec3; max: Vec3 };
   boneCount: number;
+  /**
+   * Bone pivots, flat xyz per retail bone index, in the baker's axes. Optional, but
+   * without them a crossfade blends the baked translation T = pivot + t - R(S*pivot)
+   * and limbs shrink mid-fade; with them the engine blends t and R about the pivot.
+   */
+  pivots?: number[];
   clips: ClipEntry[];
   /** ClipEntry.id to play first. */
   defaultClip: string;
   textures: TextureEntry[];
   /** Default-look geosets: visible at load. Every other submesh starts hidden. */
   defaultGeosets: number[];
-  /** Layers for the default look of a body. */
-  composite?: { width: number; height: number; layers: CompositeLayer[] };
+  /** Layers for the default look of a body. `sections`: rect of each component section, pixels; absent: retail's 2:1 layout. */
+  composite?: {
+    width: number;
+    height: number;
+    layers: CompositeLayer[];
+    sections?: Record<number, { x: number; y: number; w: number; h: number }>;
+  };
   attachments: Attachment[];
   /** Keys of retail bone indices used as named reference points, e.g. ground. */
   groundBone?: number;
   /** A bake never hides a problem: anything skipped is listed. */
   warnings: string[];
+}
+
+/**
+ * One animated value in FxData. `clips` maps a ClipEntry.id, or "*" for any clip,
+ * to [timesMs, values]; a value is a number or a number[] of the track's stride.
+ * `globalLoop` indexes FxData.globalLoops: such a track runs on wall time modulo
+ * the loop and ignores the clip. Absent tracks are constant.
+ */
+export interface FxTrack {
+  globalLoop?: number;
+  clips: Record<string, [number[], (number | number[])[]]>;
+}
+/** FxData.colors[i]: rgb 0..1, alpha 0..1. */
+export interface FxColor {
+  color?: FxTrack;
+  alpha?: FxTrack;
+}
+/** FxData.uvAnims[i]: translation xyz, rotation quaternion xyzw, scale xyz, about (.5, .5). */
+export interface FxUvAnim {
+  translation?: FxTrack;
+  rotation?: FxTrack;
+  scale?: FxTrack;
 }
 
 export interface FxData {
@@ -175,6 +212,8 @@ export interface Catalog {
   races: RaceEntry[];
   mounts: CatalogEntry[];
   items: CatalogEntry[];
+  /** Transmog sets. Absent in a catalogue from before sets were baked. */
+  sets?: SetEntry[];
 }
 
 export interface SearchRow {
@@ -182,13 +221,119 @@ export interface SearchRow {
   n: string;
   /** id */
   i: string;
-  /** group: race, body, mount, item */
-  g: "race" | "body" | "mount" | "item";
+  /** group: race, body, mount, item, set */
+  g: "race" | "body" | "mount" | "item" | "set";
   /** circle key */
   c: string;
 }
 
+/**
+ * Eclipse's slot ring, in the game's own order (src/eclipse/ui/UiMorph.cpp): one
+ * column down each side of the figure and the weapons under its feet.
+ */
+export type SlotId =
+  | "head" | "shoulder" | "back" | "chest" | "shirt" | "tabard" | "wrist"
+  | "hands" | "waist" | "legs" | "feet"
+  | "mainhand" | "offhand" | "ranged";
+
+export const SLOT_RING: { left: SlotId[]; right: SlotId[]; bottom: SlotId[] } = {
+  left: ["head", "shoulder", "back", "chest", "shirt", "tabard", "wrist"],
+  right: ["hands", "waist", "legs", "feet"],
+  bottom: ["mainhand", "offhand", "ranged"],
+};
+
+/** What a slot wears: one catalogue row in the Items or Sets browser. */
+export interface ItemEntry extends CatalogEntry {
+  slot: SlotId;
+  /** Item line, e.g. "midnight", "warwithin". */
+  line: string;
+  /** Hashed WebP of the game's icon. */
+  icon: string;
+  /** Armour facet: cloth, leather, mail, plate, or none. */
+  facet?: string;
+}
+
+export interface SetEntry extends CatalogEntry {
+  line: string;
+  /** Slot -> ItemEntry.id. Wearing a set replaces the whole look. */
+  pieces: Partial<Record<SlotId, string>>;
+}
+
+/**
+ * A wearable: the parts of one item display, resolved for one body at runtime.
+ * Attached models hang on `attachments[n].id`; collections share the body's
+ * skeleton by bone name; body textures draw into the composite.
+ */
+export interface ItemManifest {
+  formatVersion: number;
+  id: string;
+  slot: SlotId;
+  /**
+   * Models pinned to a body attachment (helm, shoulders, weapons, sheath).
+   * `manifest` is a model id. `handFlags`: ItemDisplayInfo.Flags & 0x1D00, the
+   * mirror and turn bits of a hand item. `sheath`: its transform on a sheath point,
+   * column-major, in the baker's axes.
+   */
+  attached: { attachment: number; manifest: string; handFlags?: number; sheath?: number[] }[];
+  /**
+   * When pieces differ per body (helms and shoulders are cut per race and sex): the
+   * list for each body id, used in place of `attached`. Absent: `attached` for all.
+   */
+  attachedBy?: Record<string, { attachment: number; manifest: string; handFlags?: number; sheath?: number[] }[]>;
+  /** Skinned pieces by body id or race/sex key, falling back as retail does. */
+  collections: Record<string, { manifest: string }>;
+  /**
+   * Body-texture pieces: section -> texture, drawn in the runtime composite. `sex`
+   * present: for that sex only (0 male, 1 female). Absent: both.
+   */
+  bodyLayers: { section: number; key: string; bytes: number; sex?: number }[];
+  /** What the item puts on the body's own texture slots, by type: a cloak's is type 2, on geoset 15xx. */
+  bodyTextures?: { type: number; key: string; bytes: number; width: number; height: number; alpha: boolean }[];
+  /** Geoset rules: group -> value, retail's GeosetGroup of this display. */
+  geosetGroups: Record<number, number>;
+  phys?: { key: string; bytes: number };
+  /** Geoset rule pad bits (engine logic/retailGeo.ts PAD). Absent: 0. */
+  pad?: number;
+  /** Sections this item paints, as bits. Absent: read from bodyLayers. */
+  regions?: number;
+  /** 0x20 the chest suppresses the legs, 0x40 a guild tabard. */
+  compFlags?: number;
+  /** HelmetGeosetData: groups this helm hides, by body id, or "*" for any body. */
+  helmetHide?: Record<string, number[]>;
+}
+
+/** A set's pieces, fetched at `paths.set(id)`. Same shape as SetEntry.pieces. */
+export interface SetManifest {
+  formatVersion: number;
+  id: string;
+  pieces: Partial<Record<SlotId, string>>;
+}
+
+/**
+ * One entry of `ui/sprites.json`, keyed by sprite name (`paths.ui(name)` is its file).
+ * Sizes are in retail's 1x pixels; the file is `density` times that.
+ */
+export interface UiSprite {
+  width: number;
+  height: number;
+  density: number;
+  /** How far the sprite reaches past the frame it is drawn over, per side, in 1x pixels. */
+  overhang: [number, number];
+  /** Nine-slice inset, in 1x pixels. 0: not sliced. */
+  slice: number;
+  /** The sprite's measured colour, for lighting it or for drawing a white overlay. */
+  tint: [number, number, number];
+  /** The file is white with its intensity in alpha: draw it multiplied by `tint`, or any colour. */
+  white: boolean;
+  /** Columns and rows, for a flipbook played in order. */
+  grid?: [number, number];
+}
+
 export const paths = {
+  ui: (sprite: string) => `ui/${sprite}.webp`,
+  sprites: () => `ui/sprites.json`,
+  item: (id: string) => `items/${id}/manifest.json`,
+  set: (id: string) => `sets/${id}/manifest.json`,
   manifest: (id: string) => `models/${id}/manifest.json`,
   catalog: () => `catalog/catalog.json`,
   search: () => `catalog/search.json`,
