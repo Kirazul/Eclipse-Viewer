@@ -3,8 +3,6 @@ import { mockPacks, watchErrors } from "./helpers";
 
 const ROUTES: [string, RegExp][] = [
   ["./", /Eclipse/],
-  ["races/", /Races/],
-  ["races/human/", /Human/],
   ["mounts/", /Mounts/],
   ["settings/", /Settings/],
   ["about/", /About/],
@@ -39,15 +37,11 @@ test.describe("every route", () => {
     expect(hrefs.filter((h) => !h.startsWith("/Eclipse-Viewer/"))).toEqual([]);
   });
 
-  test("entries not baked yet show dimmed, unlinked, and say so", async ({ page }) => {
-    await page.goto("races/human/");
-    const baked = page.locator("a.body-tile");
-    await expect(baked.first()).toHaveAttribute("href", "/Eclipse-Viewer/wardrobe/?body=human-male");
-    const dimmed = page.locator(".body-tile.not-baked");
-    await expect(dimmed.first()).toHaveAttribute("title", "Not baked yet");
-    expect(await dimmed.first().evaluate((e) => e.tagName)).toBe("DIV");
+  test("old race links open the wardrobe's Customization tab", async ({ page }) => {
     await page.goto("races/");
-    await expect(page.locator(".circle-link.not-baked").first()).toHaveAttribute("title", "Not baked yet");
+    await page.waitForURL(/wardrobe\/\?tab=customization/);
+    await page.goto("races/human/");
+    await page.waitForURL(/wardrobe\/\?body=human-male&tab=customization/);
   });
 
   test("/items folds into the wardrobe", async ({ page }) => {
@@ -59,7 +53,7 @@ test.describe("every route", () => {
 
   test("reduced motion: no transition runs, and the CSS asks for no page transition", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.goto("races/");
+    await page.goto("about/");
     const d = await page.locator(".nav-item").first().evaluate((e) => parseFloat(getComputedStyle(e).transitionDuration));
     expect(d).toBeLessThan(0.001);
     const css = await page.evaluate(async () => {
@@ -93,7 +87,7 @@ test.describe("navigation", () => {
   test("rail reaches every page and lights the current one", async ({ page, isMobile }) => {
     await mockPacks(page);
     await page.goto("./");
-    for (const [name, url] of [["Wardrobe", /wardrobe\/$/], ["Races", /races\/$/], ["Mounts", /mounts\/$/], ["Settings", /settings\/$/], ["Home", /Eclipse-Viewer\/$/]] as const) {
+    for (const [name, url] of [["Wardrobe", /wardrobe\/$/], ["Mounts", /mounts\/$/], ["Settings", /settings\/$/], ["Home", /Eclipse-Viewer\/$/]] as const) {
       if (isMobile) await page.locator("#menu-btn").click();
       await page.locator(".rail-nav").getByRole("link", { name }).click();
       await expect(page).toHaveURL(url);
@@ -110,8 +104,8 @@ test.describe("navigation", () => {
   test("hover and tap prefetch the next page", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover prefetch is a desktop path; tap uses the same code");
     await page.goto("./");
-    const asked = page.waitForRequest((r) => r.url().endsWith("/races/"));
-    await page.locator(".rail-nav").getByRole("link", { name: "Races" }).hover();
+    const asked = page.waitForRequest((r) => r.url().endsWith("/mounts/"));
+    await page.locator(".rail-nav").getByRole("link", { name: "Mounts" }).hover();
     await asked;
   });
 
@@ -135,7 +129,7 @@ test.describe("theme and accent", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
     const bg = await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor);
     expect(bg).not.toBe("rgb(12, 10, 8)");
-    await page.goto("races/");
+    await page.goto("about/");
     // Read inside the document before any module script could have run.
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   });
@@ -170,7 +164,7 @@ test.describe("search", () => {
         { n: "Shamanistic Hood", i: "head-2", g: "item", c: "" },
       ] });
     });
-    await page.goto("races/");
+    await page.goto("about/");
     await page.keyboard.press("Control+k");
     const dialog = page.getByTestId("search-dialog");
     await expect(dialog).toBeVisible();

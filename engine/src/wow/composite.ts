@@ -16,6 +16,7 @@ import {
   NoColorSpace,
   OrthographicCamera,
   PlaneGeometry,
+  RepeatWrapping,
   Scene,
   ShaderMaterial,
   Vector4,
@@ -28,6 +29,10 @@ export interface DrawnLayer {
   rect: { x: number; y: number; w: number; h: number };
   blend: number;
   texture: Texture;
+  /** A colour with no art for this shape colours the shape's own, lightness kept. rgb 0..1. */
+  tint?: readonly [number, number, number];
+  /** Drawn into the emissive channel, by its rules: RaceComposite.h BlendEmissive. */
+  emissive?: boolean;
 }
 
 const LAYER_VS = /* glsl */ `
@@ -44,6 +49,8 @@ const LAYER_FS = /* glsl */ `
 uniform sampler2D uSrc;
 uniform sampler2D uDst;
 uniform int uMode;
+uniform vec4 uTint;
+uniform float uEmissive;
 varying vec2 vSrc;
 varying vec2 vDst;
 vec3 overlay(vec3 d, vec3 s) {
@@ -53,9 +60,26 @@ vec3 overlay(vec3 d, vec3 s) {
 }
 void main() {
   vec4 src = texture2D(uSrc, vSrc);
+  if (uTint.a > 0.5) {
+    float l = dot(src.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float t = max(dot(uTint.rgb, vec3(0.2126, 0.7152, 0.0722)), 0.001);
+    src.rgb = clamp(uTint.rgb * l / t, 0.0, 1.0);
+  }
   vec4 dst = texture2D(uDst, vDst);
   vec4 res;
-  if (uMode == 0 || uMode == 1) {
+  if (uEmissive > 0.5) {
+    // RaceComposite.h BlendEmissive: 10 is drawn art erasing the glow under it, 16 and 17
+    // weigh by the channel's own alpha. Alpha is no strength: the result is forced to 1.
+    float sa = src.a;
+    if (uMode == 1 || uMode == 2) res = src;
+    else if (uMode == 9 || uMode == 15) res = vec4(src.rgb * sa + dst.rgb * (1.0 - sa), 1.0);
+    else if (uMode == 10) res = vec4(dst.rgb * (1.0 - sa), 1.0);
+    else {
+      float oa = sa + dst.a * (1.0 - sa);
+      vec3 c = oa > 0.0 ? (src.rgb * sa + dst.rgb * dst.a * (1.0 - sa)) / oa : vec3(0.0);
+      res = vec4(c, uMode == 17 && max(src.r, max(src.g, src.b)) > 0.0 ? 0.0 : oa);
+    }
+  } else if (uMode == 0 || uMode == 1) {
     res = src;
   } else if (uMode == 9 || uMode == 15) {
     float a = uMode == 9 ? src.a + dst.a * (1.0 - src.a) : src.a * src.a + dst.a * (1.0 - src.a);
@@ -114,6 +138,8 @@ export class CompositeRenderer {
       uSrc: { value: null },
       uDst: { value: null },
       uMode: { value: 0 },
+      uTint: { value: new Vector4() },
+      uEmissive: { value: 0 },
     },
   });
   private readonly copyMat = new ShaderMaterial({
@@ -135,8 +161,10 @@ export class CompositeRenderer {
   }
 
   /** Draws a fresh composite. The caller owns the result and swaps it in when it wants. */
-  render(width: number, height: number, layers: readonly DrawnLayer[], anisotropy: number): WebGLRenderTarget {
+  render(width: number, height: number, layers: readonly DrawnLayer[], anisotropy: number, repeat = false): WebGLRenderTarget {
     const out = new WebGLRenderTarget(width, height, {
+      // A model texture wraps on some bodies (retail's types 7, 20, 26); the skin canvas never does.
+      ...(repeat ? { wrapS: RepeatWrapping, wrapT: RepeatWrapping } : {}),
       depthBuffer: false,
       stencilBuffer: false,
       generateMipmaps: true,
@@ -179,6 +207,8 @@ export class CompositeRenderer {
       layerU.uSrc!.value = layer.texture;
       layerU.uDst!.value = a.texture;
       layerU.uMode!.value = layer.blend;
+      (layerU.uTint!.value as Vector4).set(layer.tint?.[0] ?? 0, layer.tint?.[1] ?? 0, layer.tint?.[2] ?? 0, layer.tint ? 1 : 0);
+      layerU.uEmissive!.value = layer.emissive ? 1 : 0;
       this.quad.material = this.layerMat;
       r.setRenderTarget(b);
       r.render(this.scene, this.camera);

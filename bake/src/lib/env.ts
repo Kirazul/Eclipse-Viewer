@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 /** `pnpm bake` runs with cwd = bake/, so every path is anchored on this file. */
 export const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const WORK = join(REPO, "work");
-export const LOCAL_PACKS = join(REPO, "site", "public", "packs");
+export const LOCAL_PACKS = process.env.BAKE_PACKS_DIR ?? join(REPO, "site", "public", "packs");
 export const SITE_CATALOG = join(REPO, "site", "src", "data", "catalog.json");
 
 /**
@@ -17,12 +17,14 @@ export const STAGE = {
   body: 1,
   clip: 1,
   tex: 1,
-  fx: 1,
+  fx: 2,
   phys: 1,
   icon: 1,
   ui: 1,
-  item: 1,
-  manifest: 1,
+  item: 3,
+  manifest: 2,
+  /** Customization data and bone sets. */
+  look: 2,
 } as const;
 
 /** Everything a record has to match to count as up to date. */

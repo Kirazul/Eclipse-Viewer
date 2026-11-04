@@ -112,6 +112,8 @@ uniform float uLit;
 uniform float uSolid;
 uniform vec3 uTint;
 uniform float uUserOpacity;
+uniform sampler2D uEm;
+uniform float uEmOn;
 varying vec4 vUv01;
 varying vec2 vUv2;
 varying vec3 vNormalV;
@@ -141,6 +143,8 @@ void main() {
     lit = clamp(vec3(${f(ar)}, ${f(ag)}, ${f(ab)}) + vec3(${f(sr)}, ${f(sg)}, ${f(sb)}) * ndl, 0.0, 1.0);
   }
   vec3 rgb = d * clamp(uColor * lit, 0.0, 1.0) + s;
+  // Retail's emissive channel: the skin batch's add term, after lighting.
+  if (uEmOn > 0.5) rgb += texture2D(uEm, vUv01.xy).rgb;
   float alpha = opacity * vVis;
   if (uFlags.z > 0.5) rgb *= vVis;
   gl_FragColor = vec4(rgb * uTint, uSolid > 0.5 ? 1.0 : alpha * uUserOpacity);
@@ -165,6 +169,8 @@ export interface BatchUniforms {
   uSolid: { value: number };
   uTint: { value: Vector3 };
   uUserOpacity: { value: number };
+  uEm: { value: Texture | null };
+  uEmOn: { value: number };
 }
 
 export class BatchMaterial extends ShaderMaterial {
@@ -198,6 +204,8 @@ export class BatchMaterial extends ShaderMaterial {
       uSolid: { value: state.blended ? 0 : 1 },
       uTint: { value: new Vector3(1, 1, 1) },
       uUserOpacity: { value: 1 },
+      uEm: { value: null },
+      uEmOn: { value: 0 },
     };
     super({
       vertexShader: VERT,

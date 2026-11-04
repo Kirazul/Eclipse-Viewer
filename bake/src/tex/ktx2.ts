@@ -18,13 +18,18 @@ export const ETC1S_QUALITY = 128;
  * The WASM encoder prints its progress to stdout whatever the debug flag says, a
  * dozen lines per mip. Run logs are for people, so stdout is quiet while it works.
  */
+let quiet = 0;
+let realWrite: typeof process.stdout.write | null = null;
 async function quietly<T>(work: () => Promise<T>): Promise<T> {
-  const write = process.stdout.write;
-  process.stdout.write = (() => true) as typeof process.stdout.write;
+  // Counted: encodes overlap, and the last one out must not restore the first one's stub.
+  if (quiet++ === 0) {
+    realWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+  }
   try {
     return await work();
   } finally {
-    process.stdout.write = write;
+    if (--quiet === 0) process.stdout.write = realWrite!;
   }
 }
 

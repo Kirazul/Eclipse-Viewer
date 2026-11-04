@@ -1,36 +1,13 @@
 ---
-import Shell from "../../layouts/Shell.astro";
+// A race's old page (and a search result for a race) opens that race in the wardrobe.
 import { catalog } from "../../data/catalog";
-import { art, wardrobeHref } from "../../lib/base";
+import { u } from "../../lib/base";
 import type { RaceEntry } from "@eclipse/format";
 
 export function getStaticPaths() {
   return catalog.races.map((race) => ({ params: { race: race.id }, props: { race } }));
 }
 const race = Astro.props.race as RaceEntry;
+const body = race.bodies.find((b) => b.model);
+return Astro.redirect(u(body ? `wardrobe/?body=${body.id}&tab=customization` : "wardrobe/?tab=customization"));
 ---
-<Shell title={race.name} subtitle={race.faction ?? "Choose a body."} nav="races" description={race.description}>
-  <div class="page-card">
-    <div class="detail-head">
-      <img src={art(race.circle)} alt="" width="110" height="110" decoding="async" />
-      <div>
-        <h2>{race.name}</h2>
-        {race.description && <p>{race.description}</p>}
-      </div>
-    </div>
-    <h2 class="section-title" style="margin-top:14px">Bodies</h2>
-    <div class="tile-grid">
-      {race.bodies.map((b) => b.model ? (
-        <a class="body-tile" href={wardrobeHref(b.id)} data-astro-prefetch>
-          <img src={art(b.tile || b.circle)} alt="" width="138" height="184" loading="lazy" decoding="async" />
-          <p>{b.name}</p>
-        </a>
-      ) : (
-        <div class="body-tile not-baked" title="Not baked yet">
-          <img src={art(b.tile || b.circle)} alt="" width="138" height="184" loading="lazy" decoding="async" />
-          <p>{b.name}</p>
-        </div>
-      ))}
-    </div>
-  </div>
-</Shell>

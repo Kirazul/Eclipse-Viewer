@@ -8,11 +8,14 @@ import {
 } from "@eclipse/engine/stores";
 import type { SlotId } from "@eclipse/format";
 import { PACK_BASE, art, sprite } from "../base";
+import { loadUiAtlas } from "../sprites";
+import { startMountStage } from "./mountstage";
 import { SLOT_LABEL } from "../slots";
 import { release, resetLook, setSlot, setTab, wear, wearSet } from "./actions";
-import { findItem, findSet, loadCatalog, startBrowser } from "./browser";
+import { itemInfo, loadCatalog, startBrowser, tryLink } from "./browser";
 import { attachScrub } from "./scrub";
-import { $body, $catalogState, $engine, $geosets, $gridMode, $items, $races, $scene, $slot, $tab, $worn, type RoomRace, type Tab } from "./state";
+import { $body, $catalogState, $engine, $gridMode, $items, $lookText, $races, $scene, $slot, $tab, $worn, type RoomRace, type Tab } from "./state";
+import { $loaded, $pickedMounts } from "../share/state";
 import { readUrl, startUrlSync } from "./url";
 
 const room = document.getElementById("room") as HTMLElement;
@@ -20,34 +23,24 @@ const stage = document.getElementById("stage") as HTMLElement;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const split = document.getElementById("split") as HTMLElement;
 
-const data = JSON.parse(document.getElementById("room-data")!.textContent!) as { featured: string; races: RoomRace[] };
+const data = JSON.parse(document.getElementById("room-data")!.textContent!) as { featured: string; sprites: string[]; races: RoomRace[] };
+/** The room as one mount's stage: /mounts/view/. */
+const mountMode = room.dataset.mountStage !== undefined;
 $races.set(data.races);
 
 const url = readUrl();
-const body = url.body || data.featured;
+let body = url.body || data.featured;
 $body.set(body);
 $tab.set((room.dataset.tab as Tab) ?? "items");
 if (url.slot) $slot.set(url.slot);
 $worn.set(url.look);
-$geosets.set(url.geo);
+$lookText.set(url.choices);
 if (url.scene) $scene.set(url.scene);
 try { if (localStorage.getItem("grid-mode") === "figures") $gridMode.set("figures"); } catch { /* private window */ }
 
 // --- The retail sprites -------------------------------------------------------
-// One probe decides between the sprites and the CSS-drawn frames, and the answer
-// is remembered, so a returning visitor's first frame already uses the right one.
-{
-  const probe = new Image();
-  probe.onload = () => {
-    document.documentElement.dataset.art = "1";
-    try { localStorage.setItem("ui-art", "1"); } catch { /* private window */ }
-  };
-  probe.onerror = () => {
-    delete document.documentElement.dataset.art;
-    try { localStorage.removeItem("ui-art"); } catch { /* private window */ }
-  };
-  probe.src = sprite("slot");
-}
+// One atlas, one read per visitor. Until it is cut the frames are the CSS-drawn ones.
+void loadUiAtlas(data.sprites);
 
 // --- The engine ---------------------------------------------------------------
 let firstClip: string | null = null;
@@ -56,12 +49,12 @@ async function applyLook() {
   const engine = $engine.get();
   if (!engine) return;
   await Promise.all(Object.entries($worn.get()).map(([slot, id]) => engine.equip(slot as SlotId, id ?? null)));
-  for (const [g, v] of Object.entries($geosets.get())) engine.setGeoset(Number(g), v);
   if (url.clip && url.clip !== $currentClip.get()) await engine.playAnimationByName(url.clip);
 }
 
 /** A body the catalogue lists but hasn't baked has nothing to fetch: say so, ask nothing. */
 function notBaked(id: string) {
+  if (mountMode) return false;
   return data.races.some((r) => r.bodies.some((b) => b.id === id && !b.model));
 }
 
@@ -72,7 +65,8 @@ async function loadBody(id: string) {
     showError("not baked", "This body isn't baked yet.");
     return;
   }
-  await engine.loadModel(id);
+  // A link's look is worn before the body joins the stage, so it never shows another first.
+  await engine.loadModel(id, $lookText.get() || undefined);
   if (!firstClip) firstClip = $currentClip.get();
   await applyLook();
 }
@@ -93,6 +87,15 @@ async function bootEngine() {
     });
     await engine.mount(canvas);
     $engine.set(engine);
+    if (mountMode) {
+      const first = await startMountStage();
+      if (!first) {
+        showError("no mount", "This mount isn't baked yet.");
+        return;
+      }
+      body = first;
+      $body.set(first);
+    }
     await loadBody(body);
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
@@ -146,7 +149,7 @@ $tab.listen((tab) => {
     b.classList.toggle("on", on);
     b.setAttribute("aria-selected", String(on));
   }
-  if (tab === "customization" || tab === "viewer") void loadPanels();
+  if (tab === "customization" || tab === "loadout" || tab === "viewer") void loadPanels();
 });
 
 // --- The ring -----------------------------------------------------------------
@@ -164,11 +167,12 @@ function paintRing() {
     const wasWorn = b.classList.contains("worn");
     b.classList.toggle("worn", !!id);
     const ico = b.querySelector<HTMLElement>(".slot-ico")!;
-    const icon = id ? findItem(id)?.icon : "";
+    const info = id ? itemInfo(id) : undefined;
+    const icon = info?.icon ?? "";
     ico.hidden = !icon;
     if (icon) ico.querySelector("img")!.src = art(icon);
     // The slot says every gesture it has, in the same words each time.
-    b.dataset.tip = id ? findItem(id)?.name ?? "Worn" : SLOT_LABEL[slot];
+    b.dataset.tip = id ? info?.name || "Worn" : SLOT_LABEL[slot];
     b.dataset.tipSub = id ? SLOT_LABEL[slot] : "Empty";
     b.dataset.tipHint = id ? "Click to browse. Right-click to take off." : "Click to browse.";
     if (id && !wasWorn) {
@@ -177,11 +181,14 @@ function paintRing() {
       b.classList.add("saved");
     }
   }
-  const any = Object.keys(worn).length > 0;
+  // A loaded code can hold no piece at all and still have everything else to take off.
+  const any = Object.keys(worn).length > 0 || !!$loaded.get() || !!$pickedMounts.get();
   (document.getElementById("reset-look") as HTMLElement).style.visibility = any ? "visible" : "hidden";
 }
 $worn.subscribe(paintRing);
 $items.listen(paintRing);
+$loaded.listen(paintRing);
+$pickedMounts.listen(paintRing);
 
 room.querySelector(".room")!.addEventListener("click", (e) => {
   const target = e.target as Element;
@@ -238,6 +245,30 @@ document.getElementById("strip-next")!.addEventListener("click", () => { void $e
 stripPlay.addEventListener("click", () => $engine.get()?.togglePauseAnimation());
 stripSpeed.addEventListener("click", () => $engine.get()?.goToNextTimeScale());
 attachScrub(stripScrub);
+// Weapons drawn or on their sheath points, as Z does in the game.
+{
+  const sheathe = document.getElementById("strip-sheathe") as HTMLButtonElement | null;
+  if (sheathe) {
+    let on = false;
+    const toggle = () => {
+      if (sheathe.disabled) return;
+      on = !on;
+      sheathe.setAttribute("aria-pressed", String(on));
+      sheathe.classList.toggle("on", on);
+      sheathe.dataset.tip = on ? "Draw weapons" : "Put weapons away";
+      $engine.get()?.setSheathed(on);
+    };
+    sheathe.addEventListener("click", toggle);
+    const paint = () => {
+      const w = $worn.get();
+      sheathe.disabled = !w.mainhand && !w.offhand;
+    };
+    $worn.subscribe(paint);
+    addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "z" && !e.ctrlKey && !e.metaKey && !e.altKey && !(e.target as Element).closest?.("input,textarea")) toggle();
+    });
+  }
+}
 
 // --- The split --------------------------------------------------------------------
 // Khada's panel rules (min(50%, 360px) for the side panel, collapsible past half of
@@ -314,7 +345,7 @@ function loadPanels() {
   panels ??= import("../../components/panels/mount").then((m) => m.mountPanels());
   return panels;
 }
-if ($tab.get() === "customization" || $tab.get() === "viewer") void loadPanels();
+if ($tab.get() === "customization" || $tab.get() === "loadout" || $tab.get() === "viewer") void loadPanels();
 else {
   const idle = (window as Window & { requestIdleCallback?: (f: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
   if (idle) idle(() => { void loadPanels(); }, { timeout: 2500 });
@@ -323,18 +354,11 @@ else {
 
 // --- Start ------------------------------------------------------------------------------
 startBrowser();
-startUrlSync(() => firstClip);
+if (!mountMode) startUrlSync(() => firstClip);
 void loadCatalog().then(() => {
-  if (url.tryItem) {
-    const it = findItem(url.tryItem);
-    if (it) {
-      setSlot(it.slot);
-      void wear(it.slot, it.id);
-    } else {
-      const set = findSet(url.tryItem);
-      if (set) void wearSet(set);
-    }
-  }
+  // A link with a loadout code wears the code, and keeps everything in it.
+  if (url.code) void import("../share/live").then((m) => m.importCode(url.code!, false));
+  if (url.tryItem) void tryLink(url.tryItem);
 });
 $catalogState.listen(paintRing);
 void bootEngine();

@@ -1,7 +1,7 @@
 {
  "formatVersion": 1,
  "build": "12.1.0.69933",
- "generatedAt": "2026-11-04T11:09:13.747Z",
+ "generatedAt": "2026-11-04T13:29:07.077Z",
  "races": [
   {
    "id": "human",
@@ -53,16 +53,19 @@
      "name": "Orc Female",
      "circle": "objects/bf9cab6e7592341e6d1160fe875b4f22.webp",
      "tile": "",
-     "group": "orc"
+     "group": "orc",
+     "model": "models/orc-female/manifest.json"
     },
     {
      "id": "orcupright-male",
      "name": "Orc Male (Upright)",
      "circle": "objects/a055518216ccd034f8f979fbaf9fe8ce.webp",
      "tile": "",
-     "group": "orc"
+     "group": "orc",
+     "model": "models/orcupright-male/manifest.json"
     }
-   ]
+   ],
+   "model": "models/orc-female/manifest.json"
   },
   {
    "id": "dwarf",
@@ -365,9 +368,11 @@
      "name": "Dracthyr",
      "circle": "objects/9a712b2b756bed58ff5cee3da3a9cce6.webp",
      "tile": "",
-     "group": "dracthyr"
+     "group": "dracthyr",
+     "model": "models/dracthyr-male/manifest.json"
     }
-   ]
+   ],
+   "model": "models/dracthyr-male/manifest.json"
   },
   {
    "id": "voidelf",
@@ -741,62 +746,253 @@
    ]
   }
  ],
- "mounts": [],
- "items": [
+ "mounts": [
   {
-   "id": "item-687066",
-   "name": "Void Nemesis' Spaulders",
-   "circle": "objects/76c1a99d2c4519dd0176fc298409656a.webp",
+   "id": "mount-1830",
+   "name": "Flourishing Whimsydrake",
+   "circle": "objects/26e0ff29718ea3908e63e4f214ee11cf.webp",
    "tile": "",
-   "model": "items/item-687066/manifest.json",
-   "slot": "shoulder",
-   "line": "midnight",
-   "icon": "objects/76c1a99d2c4519dd0176fc298409656a.webp",
-   "facet": "cloth"
+   "model": "models/mountd-114211/manifest.json",
+   "mountId": 1830,
+   "flying": true,
+   "variants": [
+    {
+     "id": "mountd-114211",
+     "display": 114211,
+     "name": "Flourishing Whimsydrake",
+     "icon": "objects/26e0ff29718ea3908e63e4f214ee11cf.webp",
+     "mountId": 1830,
+     "entry": 250423
+    }
+   ]
   },
   {
-   "id": "item-698194",
-   "name": "Darkfuse Lowdown Coat",
-   "circle": "objects/242f774228213fdbd8edc96799a90faa.webp",
+   "id": "mount-129",
+   "name": "Golden Gryphon",
+   "circle": "objects/1a9abe798d0c254bc987e31aad904583.webp",
    "tile": "",
-   "model": "items/item-698194/manifest.json",
-   "slot": "chest",
-   "line": "warwithin",
-   "icon": "objects/242f774228213fdbd8edc96799a90faa.webp",
-   "facet": "none"
+   "model": "models/mountd-17697/manifest.json",
+   "mountId": 129,
+   "flying": true,
+   "variants": [
+    {
+     "id": "mountd-17697",
+     "display": 17697,
+     "name": "Golden Gryphon",
+     "icon": "objects/1a9abe798d0c254bc987e31aad904583.webp",
+     "mountId": 129,
+     "entry": 17697
+    },
+    {
+     "id": "mountd-17694",
+     "display": 17694,
+     "name": "Ebon Gryphon",
+     "icon": "objects/854cb02b51c3420f1f2e3881c2d5c1d2.webp",
+     "mountId": 130,
+     "entry": 17694
+    },
+    {
+     "id": "mountd-17696",
+     "display": 17696,
+     "name": "Snowy Gryphon",
+     "icon": "objects/bcff94702441a0f3d6b4d6e72e6a22bb.webp",
+     "mountId": 131,
+     "entry": 17696
+    }
+   ]
   },
   {
-   "id": "item-677122",
-   "name": "Flawless Phase Blade",
-   "circle": "objects/d80816e74982b2a0d592e83ee21cda00.webp",
+   "id": "mount-185",
+   "name": "Raven Lord",
+   "circle": "objects/52c9b0af7f7b4e23a67c7071defc02e8.webp",
    "tile": "",
-   "model": "items/item-677122/manifest.json",
-   "slot": "mainhand",
-   "line": "warwithin",
-   "icon": "objects/d80816e74982b2a0d592e83ee21cda00.webp"
-  },
-  {
-   "id": "item-697869",
-   "name": "Sandy Quotidian Hood",
-   "circle": "objects/109d027b734919fa7abcc5324101be84.webp",
-   "tile": "",
-   "model": "items/item-697869/manifest.json",
-   "slot": "head",
-   "line": "warwithin",
-   "icon": "objects/109d027b734919fa7abcc5324101be84.webp",
-   "facet": "none"
-  },
-  {
-   "id": "item-676984",
-   "name": "Sandy Quotidian Sash",
-   "circle": "objects/c4029fd4de1a79dc6576f1a4784d3e37.webp",
-   "tile": "",
-   "model": "items/item-676984/manifest.json",
-   "slot": "waist",
-   "line": "warwithin",
-   "icon": "objects/c4029fd4de1a79dc6576f1a4784d3e37.webp",
-   "facet": "none"
+   "model": "models/mountd-21473/manifest.json",
+   "mountId": 185,
+   "flying": false,
+   "variants": [
+    {
+     "id": "mountd-21473",
+     "display": 21473,
+     "name": "Raven Lord",
+     "icon": "objects/52c9b0af7f7b4e23a67c7071defc02e8.webp",
+     "mountId": 185,
+     "entry": 21473
+    }
+   ]
   }
  ],
- "sets": []
+ "items": [],
+ "sets": [],
+ "lines": [
+  {
+   "id": "eclipse",
+   "title": "Eclipse",
+   "items": 5,
+   "sets": 0
+  },
+  {
+   "id": "client",
+   "title": "This client",
+   "items": 3,
+   "sets": 0
+  },
+  {
+   "id": "midnight",
+   "title": "Midnight",
+   "items": 2,
+   "sets": 0
+  },
+  {
+   "id": "warwithin",
+   "title": "War Within",
+   "items": 11,
+   "sets": 2
+  }
+ ],
+ "itemShards": [
+  {
+   "line": "eclipse",
+   "slot": "head",
+   "key": "catalog/items/eclipse-head.json",
+   "count": 1,
+   "facets": [
+    "mail"
+   ]
+  },
+  {
+   "line": "eclipse",
+   "slot": "shoulder",
+   "key": "catalog/items/eclipse-shoulder.json",
+   "count": 2,
+   "facets": [
+    "cloth"
+   ]
+  },
+  {
+   "line": "eclipse",
+   "slot": "mainhand",
+   "key": "catalog/items/eclipse-mainhand.json",
+   "count": 2,
+   "facets": []
+  },
+  {
+   "line": "client",
+   "slot": "head",
+   "key": "catalog/items/client-head.json",
+   "count": 1,
+   "facets": [
+    "mail"
+   ]
+  },
+  {
+   "line": "client",
+   "slot": "mainhand",
+   "key": "catalog/items/client-mainhand.json",
+   "count": 2,
+   "facets": []
+  },
+  {
+   "line": "midnight",
+   "slot": "mainhand",
+   "key": "catalog/items/midnight-mainhand.json",
+   "count": 1,
+   "facets": []
+  },
+  {
+   "line": "midnight",
+   "slot": "offhand",
+   "key": "catalog/items/midnight-offhand.json",
+   "count": 1,
+   "facets": []
+  },
+  {
+   "line": "warwithin",
+   "slot": "chest",
+   "key": "catalog/items/warwithin-chest.json",
+   "count": 1,
+   "facets": [
+    "plate"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "head",
+   "key": "catalog/items/warwithin-head.json",
+   "count": 1,
+   "facets": [
+    "plate"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "hands",
+   "key": "catalog/items/warwithin-hands.json",
+   "count": 1,
+   "facets": [
+    "plate"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "back",
+   "key": "catalog/items/warwithin-back.json",
+   "count": 1,
+   "facets": [
+    "cloth"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "legs",
+   "key": "catalog/items/warwithin-legs.json",
+   "count": 1,
+   "facets": [
+    "plate"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "shoulder",
+   "key": "catalog/items/warwithin-shoulder.json",
+   "count": 2,
+   "facets": [
+    "plate"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "feet",
+   "key": "catalog/items/warwithin-feet.json",
+   "count": 1,
+   "facets": [
+    "plate"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "wrist",
+   "key": "catalog/items/warwithin-wrist.json",
+   "count": 1,
+   "facets": [
+    "plate"
+   ]
+  },
+  {
+   "line": "warwithin",
+   "slot": "waist",
+   "key": "catalog/items/warwithin-waist.json",
+   "count": 2,
+   "facets": [
+    "plate"
+   ]
+  }
+ ],
+ "setShards": [
+  {
+   "line": "warwithin",
+   "key": "catalog/sets/warwithin.json",
+   "count": 2
+  }
+ ],
+ "mountCount": 3
 }

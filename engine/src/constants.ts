@@ -9,6 +9,8 @@ export const CAMERA = { fov: 10, aspect: 1, near: 0.1, far: 100, position: [0, 3
 /** The model's root sits here: the camera target stays at the origin's height. */
 export const MODEL_OFFSET = [0, 0, -1] as const;
 export const CONTROLS = { minDistance: 0.8, maxDistance: 80 };
+/** A body's camera: level, as retail's customization screen. Radians from straight up. */
+export const BODY_POLAR = Math.PI / 2;
 
 export const CROSSFADE_S = 0.3;
 export const TIME_SCALES = [0.1, 0.5, 1, 2] as const;

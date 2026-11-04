@@ -13,6 +13,10 @@ export interface BakeContext {
   force: boolean;
   /** Limits per-body work to these bodies. Local proofs on a slow line; the cloud bakes all. */
   onlyBodies?: Set<string>;
+  /** Local proofs on a slow line: only these clips are baked. The cloud bakes all. */
+  onlyClips?: Set<string>;
+  /** Local proofs on a slow line: true once this run's downloads have spent --tex-budget-mb. */
+  overTextureBudget?: () => boolean;
 }
 
 export function openSource(name: string): GameSource {
@@ -40,18 +44,36 @@ export interface BakeRecord {
   sizes?: Record<string, number>;
   seconds: number;
   bakedAt: string;
+  /** Item and mount units: every object the entry needs was checked as it was written. */
+  validated?: boolean;
+  /** Icon fdid -> object key, for the catalogue's rows. */
+  icons?: Record<string, string>;
+  /** Item units: bodies no cut and no close donor can draw it on. */
+  notOn?: string[];
+  /** Mount units: the displays that baked. */
+  variants?: number[];
 }
 
 export function recordKey(id: string): string {
   return `records/${id}.json`;
 }
 
+/** The budget store keeps every record in one file: "done" costs no GET per unit. */
+type RecordIndex = Store & { record?: (id: string) => Promise<unknown>; putRecord?: (r: { id: string }) => Promise<void> };
+
 export async function readRecord(store: Store, id: string): Promise<BakeRecord | null> {
+  const index = store as RecordIndex;
+  if (index.record) return (await index.record(id)) as BakeRecord | null;
   const b = await store.get(recordKey(id));
   return b ? (JSON.parse(b.toString("utf8")) as BakeRecord) : null;
 }
 
 export async function writeRecord(store: Store, r: BakeRecord): Promise<void> {
+  const index = store as RecordIndex;
+  if (index.putRecord) {
+    await index.putRecord(r);
+    return;
+  }
   await store.put(recordKey(r.id), Buffer.from(JSON.stringify(r, null, 1)));
 }
 

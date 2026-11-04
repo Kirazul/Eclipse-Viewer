@@ -1,0 +1,8 @@
+---
+/** `/mounts/view/?id=mount-123`: one animal on a stage that takes the whole width, as Eclipse's Mounts page does. */
+import Shell from "../../layouts/Shell.astro";
+import DressingRoom from "../../components/DressingRoom.astro";
+---
+<Shell title="Mount" subtitle="Drag to turn, scroll to zoom." nav="mounts" fit>
+  <DressingRoom defaultTab="viewer" mountStage />
+</Shell>

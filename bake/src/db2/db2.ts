@@ -11,10 +11,11 @@ export type Row = Record<string, string>;
  * thousands of rows: as objects, all of it would not fit in a runner's heap.
  */
 const KEEP: Record<string, readonly string[]> = {
-  ItemSparse: ["ID", "Display_lang", "ExpansionID"],
-  Item: ["ID", "ClassID", "SubclassID", "InventoryType", "IconFileDataID"],
-  CreatureDisplayInfo: ["ID", "ModelID"],
-  CreatureModelData: ["ID", "FileDataID"],
+  ItemSparse: ["ID", "Display_lang", "ExpansionID", "OverallQualityID"],
+  Item: ["ID", "ClassID", "SubclassID", "InventoryType", "IconFileDataID", "SheatheType"],
+  CreatureDisplayInfo: ["ID", "ModelID", "ExtendedDisplayInfoID", "CreatureModelScale", "TextureVariationFileDataID_0", "TextureVariationFileDataID_1", "TextureVariationFileDataID_2", "TextureVariationFileDataID_3"],
+  CreatureModelData: ["ID", "FileDataID", "CreatureGeosetDataID", "ModelScale"],
+  SpellMisc: ["ID", "SpellID", "SpellIconFileDataID"],
 };
 
 /** RFC 4180: quoted fields may hold commas, quotes (doubled) and newlines. Lore text does. */

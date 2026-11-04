@@ -3,7 +3,8 @@ import { BUILD, R2, packUrl, paths } from "@eclipse/format";
 import type { BakeRecord } from "../bake/context";
 import { BAKER_VERSION, humanBytes, log } from "../lib/env";
 import type { Store } from "../store/store";
-import { markBaked } from "./catalog";
+import { type Usage, BudgetStore, LIMITS } from "../store/budget";
+import { type Listing, markBaked, recordsOf } from "./catalog";
 
 /** Milestone 1's budget for a body's first load, on the wire (spec section 10). */
 const BODY_FIRST_LOAD_BUDGET = 2 * 1024 * 1024;
@@ -19,14 +20,14 @@ export interface Report {
   overBudget: { id: string; firstLoad: number }[];
   warnings: { id: string; warnings: string[] }[];
   models: { id: string; kind: string; status: string; seconds: number; sizes: Record<string, number> }[];
+  /** What the bucket and the month stand at, against the limits the store enforces. */
+  usage?: Usage & { limits: typeof LIMITS };
+  /** What each line lists, and what it left out. Nothing here is hidden. */
+  listing?: Listing;
 }
 
 export async function buildReport(store: Store): Promise<Report> {
-  const records: BakeRecord[] = [];
-  for (const key of await store.list("records/")) {
-    const b = await store.get(key);
-    if (b) records.push(JSON.parse(b.toString("utf8")) as BakeRecord);
-  }
+  const records: BakeRecord[] = [...(await recordsOf(store)).values()];
   const ok = records.filter((r) => r.status === "ok");
   const failures = records.filter((r) => r.status === "failed").map((r) => ({ id: r.id, error: r.error ?? "unknown" }));
   const over = ok.filter((r) => r.kind === "body" && FIRST_LOAD(r) > BODY_FIRST_LOAD_BUDGET).map((r) => ({ id: r.id, firstLoad: FIRST_LOAD(r) }));
@@ -53,6 +54,17 @@ export function summaryMarkdown(r: Report): string {
     "",
     `${r.counts.ok} of ${r.counts.total} baked, ${r.counts.failed} failed, ${r.counts.overBudget} over budget.`,
     "",
+    ...(r.usage ? [`R2: ${(r.usage.bytes / 1e9).toFixed(3)} of ${(r.usage.limits.bytes / 1e9).toFixed(1)} GB, ${r.usage.objects} objects, ${r.usage.classA} of ${r.usage.limits.classA} Class A this month.`, ""] : []),
+    ...(r.listing
+      ? [
+          "| Line | Rows | Listed | Not baked | Left out | With entry |",
+          "|---|---|---|---|---|---|",
+          ...Object.entries(r.listing.lines).map(([id, l]) => `| ${id} | ${l.coverage.total} | ${l.listed} | ${l.notBaked} | ${l.failed + l.coverage.unresolved + l.coverage.unnamed + l.coverage.noSlot} | ${l.entries} |`),
+          "",
+          `Mounts: ${r.listing.mounts.listed} of ${r.listing.mounts.families} animals, ${r.listing.mounts.variantsListed} of ${r.listing.mounts.variants} colours, ${r.listing.mounts.failed} left out, ${r.listing.mounts.entries} with a display id.`,
+          "",
+        ]
+      : []),
     "| Model | First load | GLB | Clips | Seconds |",
     "|---|---|---|---|---|",
   ];
@@ -87,10 +99,17 @@ export async function publicReadCheck(base: string): Promise<string> {
   }
 }
 
-export async function runReport(store: Store, summaryFile?: string): Promise<void> {
+export async function runReport(store: Store, summaryFile?: string, shards = 0): Promise<void> {
+  // A matrix of shards each left its delta: fold them in before anything reads the ledger.
+  if (store instanceof BudgetStore && shards > 0) {
+    const n = await store.foldShards(shards);
+    log(`report: folded ${n} shard ledger(s)`);
+  }
   const report = await buildReport(store);
   // The catalogue ran before this bake: only now can it say what was baked.
   await markBaked(store);
+  const listing = await store.get("reports/listing.json");
+  if (listing) report.listing = JSON.parse(listing.toString("utf8")) as Listing;
   if (store.name === "r2") {
     const problem = await publicReadCheck(R2.publicBase);
     if (problem) {
@@ -101,7 +120,9 @@ export async function runReport(store: Store, summaryFile?: string): Promise<voi
       log(`report: ${R2.publicBase} serves the catalogue, decoded, to a plain fetch`);
     }
   }
+  if (store instanceof BudgetStore) report.usage = { ...store.current(), limits: LIMITS };
   await store.put(paths.report(), Buffer.from(JSON.stringify(report, null, 1)));
+  if (store instanceof BudgetStore) await store.flush();
   log(`report: ${report.counts.ok}/${report.counts.total} ok, ${report.counts.failed} failed, ${report.counts.overBudget} over budget, largest first load ${humanBytes(report.bytes.firstLoadMax)}`);
   if (summaryFile) appendFileSync(summaryFile, summaryMarkdown(report));
 }

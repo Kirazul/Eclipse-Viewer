@@ -37,7 +37,7 @@ test.describe("budgets", () => {
 
   test("home under 500 KB, list under 150 KB, and they ship almost no JS", () => {
     const home = pageBytes("index.html");
-    const list = pageBytes("races/index.html");
+    const list = pageBytes("mounts/index.html");
     const room = pageBytes("wardrobe/index.html");
     console.log("budget (bytes, uncompressed, static imports)", dist, JSON.stringify({ home, list, room }));
     expect(home.total).toBeLessThan(500 * 1024);
@@ -46,7 +46,7 @@ test.describe("budgets", () => {
   });
 
   test("the list page never pulls the engine, three or React", () => {
-    const html = readFileSync(join(dist, "races/index.html"), "utf8");
+    const html = readFileSync(join(dist, "mounts/index.html"), "utf8");
     expect(html).not.toMatch(/modulepreload/);
     expect(html).not.toMatch(/astro-island/);
     const list = readFileSync(join(dist, "wardrobe/index.html"), "utf8");

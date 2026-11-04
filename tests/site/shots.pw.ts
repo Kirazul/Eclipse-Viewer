@@ -40,7 +40,7 @@ test.describe("reference shots", () => {
     await page.screenshot({ path: `${OUT}/01b_empty.png` });
   });
 
-  for (const [name, path] of [["home", ""], ["races", "races/"], ["race", "races/human/"], ["mounts", "mounts/"], ["settings", "settings/"], ["about", "about/"], ["privacy", "privacy/"], ["404", "nope/"]] as const) {
+  for (const [name, path] of [["home", ""], ["mounts", "mounts/"], ["settings", "settings/"], ["about", "about/"], ["privacy", "privacy/"], ["404", "nope/"]] as const) {
     test(`page ${name}`, async ({ page }) => {
       await mockPacks(page);
       await page.goto(path || "./");

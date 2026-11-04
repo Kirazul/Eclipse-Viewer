@@ -37,6 +37,7 @@ export async function mockPacks(page: Page, opts: { catalog?: unknown | null } =
   await page.route("**/packs/catalog/catalog.json", (r) =>
     catalog === null ? r.fulfill({ status: 404, body: "" }) : r.fulfill({ json: catalog }));
   await page.route("**/packs/catalog/search.json", (r) => r.fulfill({ json: FIXTURE_SEARCH }));
+  await page.route("**/packs/catalog/search-items.json", (r) => r.fulfill({ json: [] }));
 }
 
 /** Everything the console says that is an actual error, minus packs that aren't baked. */

@@ -5,9 +5,10 @@
  * applies a plan in one step, once everything in it can draw.
  */
 import { Group, Matrix4, Skeleton, Uint16BufferAttribute, type Bone, type Object3D, type SkinnedMesh, type Texture } from "three";
-import { packUrl, paths, type ItemManifest, type SlotId, type Vec3 } from "@eclipse/format";
+import { packUrl, paths, type AttachedPiece, type ItemManifest, type SlotId, type Vec3 } from "@eclipse/format";
 import { fetchBytes, fetchJson } from "../net/fetchPack";
-import { ModelAssets, type LoadEnv } from "../model/assets";
+import { ModelAssets, registerManifests, type LoadEnv } from "../model/assets";
+import { boneIndex } from "../logic/pivots";
 import { Figure } from "../model/figure";
 import { parseTexture } from "../model/loaders";
 import { outfitGeosets } from "../logic/geosets";
@@ -23,6 +24,23 @@ export interface Piece {
   /** What goes under `parent`. */
   node: Object3D;
   mirrored: boolean;
+  /** Where it rests when the weapons are put away. Absent: it stays, or it is not a weapon. */
+  stowed?: { parent: Object3D | null; matrix: Matrix4; mirrored: boolean };
+  /** Where it hangs drawn. */
+  drawn?: { parent: Object3D | null; matrix: Matrix4; mirrored: boolean };
+  /** The slot it is worn in: the ranged weapon hangs on the back whatever the hands hold. */
+  slot?: SlotId;
+}
+
+/** Moves a hand item between its drawn and its stowed place. A piece with no stowed place stays. */
+export function placePiece(piece: Piece, stowed: boolean): void {
+  const pose = stowed && piece.stowed ? piece.stowed : piece.drawn;
+  if (!pose) return;
+  (piece.node as Group).matrix.copy(pose.matrix);
+  piece.node.matrixWorldNeedsUpdate = true;
+  piece.parent = pose.parent;
+  piece.mirrored = pose.mirrored;
+  if (piece.node.parent && piece.node.parent !== pose.parent) pose.parent?.add(piece.node);
 }
 
 export interface ResolvedItem {
@@ -30,6 +48,8 @@ export interface ResolvedItem {
   manifest: ItemManifest;
   pieces: Piece[];
   layers: { section: number; texture: Texture }[];
+  /** What it paints on the body's own texture slots, by type. */
+  wornTextures: { type: number; texture: Texture }[];
   warnings: string[];
 }
 
@@ -51,7 +71,7 @@ function handOf(slot: SlotId, attachment: number): 0 | 1 | -1 {
 export function collectionFor(
   collections: ItemManifest["collections"],
   bodyId: string,
-): { manifest: string } | undefined {
+): ItemManifest["collections"][string] | undefined {
   return collections[bodyId] ?? collections[bodyId.split("-")[0]!] ?? collections["*"];
 }
 
@@ -62,21 +82,41 @@ export function collectionFor(
  * state of its own. Otherwise it gets a Skeleton over the body's bones by name.
  */
 export function rebindCollection(piece: Figure, body: Figure): number {
+  piece.host = body;
   let matched = 0;
   const bodySkeleton = body.skeleton;
+  // One GLB per file, whichever body wears it: its joints are the file's own, and a
+  // joint is found on the body by what it is, its retail name hash, not where it sits.
+  const pieceCrcs = piece.assets.manifest.boneCrcs;
+  const bodyCrcs = body.assets.manifest.boneCrcs;
+  let bodyAt: Map<number, number> | null = null;
+  if (pieceCrcs && bodyCrcs) {
+    bodyAt = new Map();
+    for (let i = 0; i < bodyCrcs.length; i++) {
+      const c = bodyCrcs[i]!;
+      if (c && !bodyAt.has(c)) bodyAt.set(c, i);
+    }
+  }
+  const onBody = (name: string): Bone | undefined => {
+    if (!bodyAt || !pieceCrcs) return body.bones.get(name) as Bone | undefined;
+    const own = boneIndex(name);
+    const at = own >= 0 ? bodyAt.get(pieceCrcs[own] ?? 0) : undefined;
+    return at === undefined ? undefined : (body.bones.get(`b${at}`) as Bone | undefined);
+  };
   for (const part of piece.parts) {
     const mesh = part.mesh as SkinnedMesh;
     if (!mesh.isSkinnedMesh) continue;
     const own = mesh.skeleton;
-    const mapped = own.bones.map((b) => body.bones.get(b.name) as Bone | undefined);
+    const mapped = own.bones.map((b) => onBody(b.name));
     matched += mapped.filter(Boolean).length;
     const identity = new Matrix4();
     const allThere = mapped.every(Boolean);
     if (allThere && bodySkeleton) {
       const index = new Map(bodySkeleton.bones.map((b, i) => [b.name, i]));
-      const toBody = own.bones.map((b) => index.get(b.name) ?? -1);
+      const toBody = mapped.map((b) => index.get(b!.name) ?? -1);
       // A packer may fold its quantization into the inverse binds: only equal ones can share.
-      const sameInverses = toBody.every((to, i) => to >= 0 && own.boneInverses[i]!.equals(bodySkeleton.boneInverses[to]!));
+      // A face bone set lives in the body's inverse slot and is meant to carry the piece too.
+      const sameInverses = toBody.every((to, i) => to >= 0 && (body.isFaceBone(to) || own.boneInverses[i]!.equals(bodySkeleton.boneInverses[to]!)));
       if (sameInverses) {
         const attr = mesh.geometry.getAttribute("skinIndex");
         const out = new Uint16Array(attr.count * 4);
@@ -93,6 +133,16 @@ export function rebindCollection(piece: Figure, body: Figure): number {
         continue;
       }
     }
+    // A joint the body doesn't have hangs from the joint above it, as in the file. Left
+    // in the piece's own tree it would hold its bind pose while the body moves away.
+    own.bones.forEach((b, i) => {
+      if (mapped[i] || !b.parent) return;
+      const above = own.bones.indexOf(b.parent as Bone);
+      if (above >= 0 && mapped[above]) {
+        mapped[above]!.add(b);
+        piece.adopted.push(b);
+      }
+    });
     const bones = own.bones.map((b, i) => (mapped[i] ?? b) as Bone);
     const skeleton = new Skeleton(bones, own.boneInverses);
     own.dispose();
@@ -114,47 +164,65 @@ export class ItemLibrary {
     private readonly keep = 12,
   ) {}
 
-  resolve(id: string): Promise<ResolvedItem> {
-    const hit = this.items.get(id);
+  /** A hand item worn in the other hand is another piece: it hangs and mirrors for that hand. */
+  resolve(id: string, worn?: SlotId): Promise<ResolvedItem> {
+    const key = itemKey(id, worn);
+    const hit = this.items.get(key);
     if (hit) {
       hit.used = ++this.tick;
       return hit.promise;
     }
     const abort = new AbortController();
-    const promise = this.load(id, abort.signal);
+    const promise = this.load(id, abort.signal, worn);
     const entry = { promise, abort, used: ++this.tick };
-    this.items.set(id, entry);
+    this.items.set(key, entry);
     promise.catch(() => {
-      if (this.items.get(id) === entry) this.items.delete(id);
+      if (this.items.get(key) === entry) this.items.delete(key);
     });
     return promise;
   }
 
-  private async load(id: string, signal: AbortSignal): Promise<ResolvedItem> {
+  private place(attachment: number, a: AttachedPiece, slot: SlotId, stowed: boolean): { parent: Object3D | null; matrix: Matrix4; mirrored: boolean } | null {
+    const { body } = this;
+    const point = body.assets.manifest.attachments.find((p) => p.id === attachment);
+    if (!point) return null;
+    const pose = handPose(a.handFlags ?? 0, handOf(slot, attachment), stowed);
+    const matrix = new Matrix4();
+    anchorMatrix(matrix, point.position, pose.scale, stowed ? a.sheath : undefined);
+    return { parent: body.bones.get(`b${point.bone}`) ?? null, matrix, mirrored: pose.mirrored };
+  }
+
+  private async load(id: string, signal: AbortSignal, worn?: SlotId): Promise<ResolvedItem> {
     const { env, body } = this;
     const manifest = await fetchJson<ItemManifest>(packUrl(env.base, paths.item(id)), { signal, priority: "high" });
+    registerManifests(manifest.models);
     const warnings: string[] = [];
     const piecePromises: Promise<Piece | null>[] = [];
+    const slot = worn ?? manifest.slot;
+    // An item retail cuts per body lists each body's pieces; a body it does not list wears none.
+    const attachedList = manifest.attachedBy ? manifest.attachedBy[body.id] ?? [] : manifest.attached ?? [];
 
-    for (const a of manifest.attached ?? []) {
+    for (const a of attachedList) {
       piecePromises.push(
         (async () => {
-          const point = body.assets.manifest.attachments.find((p) => p.id === a.attachment);
-          if (!point) {
-            warnings.push(`body ${body.id} has no attachment ${a.attachment}`);
+          const attachment = wornAttachment(slot, a.attachment);
+          const drawn = this.place(attachment, a, slot, false);
+          if (!drawn) {
+            warnings.push(`body ${body.id} has no attachment ${attachment}`);
             return null;
           }
-          const parent = body.bones.get(`b${point.bone}`) ?? null;
+          const hand = slot === "offhand" ? 1 : 0;
+          const stowPoint = a.sheathPoints?.[hand];
+          const stowed = stowPoint !== undefined ? this.place(stowPoint, a, slot, true) : null;
           const assets = await ModelAssets.load(a.manifest, env, { signal });
           const figure = new Figure(assets, { layer: 2, namePrefix: `p${++pieceNames}_` });
           const anchor = new Group();
-          anchor.name = `attachment-${a.attachment}`;
-          const pose = handPose(a.handFlags ?? 0, handOf(manifest.slot, a.attachment), SHEATH_POINTS.includes(a.attachment));
+          anchor.name = `attachment-${attachment}`;
           anchor.matrixAutoUpdate = false;
-          anchorMatrix(anchor.matrix, point.position, pose.scale, a.sheath);
+          anchor.matrix.copy(drawn.matrix);
           anchor.add(figure.root);
           startOwnClip(figure);
-          return { kind: "attached" as const, figure, parent, node: anchor, mirrored: pose.mirrored };
+          return { kind: "attached" as const, figure, parent: drawn.parent, node: anchor, mirrored: drawn.mirrored, drawn, slot, ...(stowed ? { stowed } : {}) };
         })(),
       );
     }
@@ -171,13 +239,22 @@ export class ItemLibrary {
       );
     }
 
-    const layerPromises = (manifest.bodyLayers ?? []).map(async (l) => {
+    const sex = body.id.endsWith("-female") ? 1 : 0;
+    const layerList: { section: number; key: string; bytes: number }[] = manifest.bodyLayersBy
+      ? manifest.bodyLayersBy[body.id] ?? []
+      : (manifest.bodyLayers ?? []).filter((l) => l.sex === undefined || l.sex === sex);
+    const layerPromises = layerList.map(async (l) => {
       const bytes = await fetchBytes(packUrl(env.base, l.key), { signal, priority: "high", expected: l.bytes });
       return { section: l.section, texture: await parseTexture(env.renderer, bytes, 1) };
     });
 
-    const [pieces, layers] = await Promise.all([Promise.all(piecePromises), Promise.all(layerPromises)]);
-    return { id, manifest, pieces: pieces.filter((p): p is Piece => p !== null), layers, warnings };
+    const wornPromises = (manifest.bodyTextures ?? []).map(async (t) => {
+      const bytes = await fetchBytes(packUrl(env.base, t.key), { signal, priority: "high", expected: t.bytes });
+      return { type: t.type, texture: await parseTexture(env.renderer, bytes, env.anisotropy()) };
+    });
+
+    const [pieces, layers, wornTextures] = await Promise.all([Promise.all(piecePromises), Promise.all(layerPromises), Promise.all(wornPromises)]);
+    return { id, manifest, pieces: pieces.filter((p): p is Piece => p !== null), layers, wornTextures, warnings };
   }
 
   /** Stops a fetch nobody wants any more. A finished item stays for a re-hover. */
@@ -221,12 +298,25 @@ export class ItemLibrary {
   }
 }
 
+/** A hand slot's copy is its own piece. Everything else is one piece wherever it is worn. */
+export function itemKey(id: string, worn?: SlotId): string {
+  return worn === "mainhand" || worn === "offhand" || worn === "ranged" ? `${id}@${worn}` : id;
+}
+
+/** The two hands take anything: an item goes where it is worn, a shield stays on the arm. */
+export function wornAttachment(worn: SlotId, baked: number): number {
+  if (worn === "mainhand") return 1;
+  if (worn === "offhand") return baked === 0 ? 0 : 2;
+  return baked;
+}
+
 export function disposeItem(item: ResolvedItem): void {
   for (const piece of item.pieces) {
     piece.node.removeFromParent();
     piece.figure.dispose();
   }
   for (const l of item.layers) l.texture.dispose();
+  for (const t of item.wornTextures) t.texture.dispose();
 }
 
 function anchorMatrix(out: Matrix4, position: Vec3, scale: readonly [number, number, number], sheath?: number[]): void {
@@ -255,6 +345,8 @@ export interface OutfitPlan {
   /** Same key, same composite. Empty: the body's own composite will do. */
   compositeKey: string;
   pieces: Piece[];
+  /** Type -> what the outfit paints on the body's own slots. */
+  wornTextures: Map<number, Texture>;
 }
 
 export function planOutfit(body: Figure, worn: ReadonlyMap<SlotId, ResolvedItem>): OutfitPlan {
@@ -262,6 +354,7 @@ export function planOutfit(body: Figure, worn: ReadonlyMap<SlotId, ResolvedItem>
   let compFlags = 0;
   const helmHide = new Set<number>();
   const pieces: Piece[] = [];
+  const wornTextures = new Map<number, Texture>();
 
   for (const [slot, item] of worn) {
     const m = item.manifest;
@@ -280,15 +373,22 @@ export function planOutfit(body: Figure, worn: ReadonlyMap<SlotId, ResolvedItem>
     const hide = m.helmetHide?.[body.id] ?? m.helmetHide?.["*"];
     if (hide) for (const g of hide) helmHide.add(g);
     pieces.push(...item.pieces);
+    for (const t of item.wornTextures) wornTextures.set(t.type, t.texture);
   }
+  // The hands keep their hands, and the ranged weapon hangs: its drawn point is a hand, and
+  // the attach clears the point it lands on (Eclipse DressRoom.cpp).
+  const handsFull = worn.has("mainhand") || worn.has("offhand");
+  for (const piece of worn.get("ranged")?.pieces ?? []) placePiece(piece, handsFull);
 
   const composite = body.assets.manifest.composite;
   const layers: DrawnLayer[] = [];
   const keys: string[] = [];
   if (composite) {
-    for (const { layer, texture } of body.assets.layers) {
-      if (texture) layers.push({ rect: layer.rect, blend: layer.blend, texture });
-    }
+    if (body.drawnLayers) layers.push(...body.drawnLayers);
+    else
+      for (const { layer, texture } of body.assets.layers) {
+        if (texture && layer.targetType === 1) layers.push({ rect: layer.rect, blend: layer.blend, texture });
+      }
     for (const slot of PAINT_ORDER) {
       const item = worn.get(slot);
       if (!item) continue;
@@ -304,8 +404,10 @@ export function planOutfit(body: Figure, worn: ReadonlyMap<SlotId, ResolvedItem>
   return {
     visible: outfitGeosets(body.look, slots, compFlags, [...helmHide]),
     layers,
-    compositeKey: keys.join("|"),
+    // Empty: the look's own composite will do. A look change redraws what an item paints over it.
+    compositeKey: keys.length ? `${body.lookKey}@${keys.join("|")}` : "",
     pieces,
+    wornTextures,
   };
 }
 

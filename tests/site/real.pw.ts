@@ -4,7 +4,7 @@ import { cls, fixtureCatalog, shifts, startCls } from "./helpers";
 
 // The real engine and the real local packs (site/public/packs), when both exist. It
 // drives WebGL in Edge; the numbers come from the engine's own window.eclipse.
-const REAL = "http://localhost:4330/Eclipse-Viewer/";
+const REAL = process.env.SWEEP_BASE ?? "http://localhost:4330/Eclipse-Viewer/";
 const OUT = "tests/site/results/shots";
 mkdirSync(OUT, { recursive: true });
 
@@ -138,11 +138,22 @@ test.describe("with the real engine and packs", () => {
     await expect(page.locator("#strip-play")).toHaveAttribute("aria-label", "Play");
   });
 
-  test("customization steppers change real geosets", async ({ page }) => {
+  test("customization lists retail's options, and a choice changes the body", async ({ page }) => {
     const errors = await open(page, "?body=human-male&tab=customization");
     await expect(page.getByTestId("custom-pane")).toBeVisible();
-    const axes = await page.locator(".axis").count();
-    console.log("real: axes", axes, JSON.stringify(await page.locator(".axis-name").allTextContents()));
+    await expect(page.locator('[data-option="11"] .opt-track-name')).toHaveText("Peasant");
+    const names = await page.locator(".opt-name").allTextContents();
+    console.log("real: options", JSON.stringify(names));
+    expect(names).toContain("Hair Style");
+    expect(names).toContain("Skin Color");
+    const before = await page.evaluate(() => (window as unknown as { eclipse: { internals: { visibleGeosets(): number[] } } }).eclipse.internals.visibleGeosets());
+    await page.getByRole("button", { name: "Next Hair Style" }).click();
+    await expect(page.locator('[data-option="11"] .opt-track-name')).toHaveText("Soldier");
+    const after = await page.evaluate(() => (window as unknown as { eclipse: { internals: { visibleGeosets(): number[] } } }).eclipse.internals.visibleGeosets());
+    expect(before).toContain(2);
+    expect(after).toContain(3);
+    expect(after).not.toContain(2);
+    await expect(page).toHaveURL(/choices=11\.46/);
     await page.screenshot({ path: `${OUT}/r_custom.png` });
     expect(errors).toEqual([]);
   });

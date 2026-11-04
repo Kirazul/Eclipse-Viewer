@@ -2,8 +2,8 @@ import { atom } from "nanostores";
 import type { ViewerEngine } from "@eclipse/engine/api";
 import type { CatalogEntry, ItemEntry, SetEntry, SlotId } from "@eclipse/format";
 
-export type Tab = "items" | "sets" | "customization" | "viewer";
-export const TABS: Tab[] = ["items", "sets", "customization", "viewer"];
+export type Tab = "items" | "sets" | "customization" | "loadout" | "viewer";
+export const TABS: Tab[] = ["items", "sets", "customization", "loadout", "viewer"];
 
 export interface RoomBody {
   id: string;
@@ -16,6 +16,9 @@ export interface RoomRace {
   id: string;
   name: string;
   circle: string;
+  faction?: "Alliance" | "Horde" | "Neutral";
+  /** "Core" or "Allied". */
+  group?: string;
   bodies: RoomBody[];
 }
 
@@ -27,7 +30,8 @@ export const $tab = atom<Tab>("items");
 export const $slot = atom<SlotId>("head");
 /** Worn slot -> item id. */
 export const $worn = atom<Partial<Record<SlotId, string>>>({});
-export const $geosets = atom<Record<number, number>>({});
+/** The look as a link holds it: the choices that differ from the first look, `<option>.<choice>,...`. */
+export const $lookText = atom<string>("");
 export const $races = atom<RoomRace[]>([]);
 
 export const $items = atom<ItemEntry[]>([]);

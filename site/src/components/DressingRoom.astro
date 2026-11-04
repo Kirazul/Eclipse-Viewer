@@ -11,17 +11,20 @@
  */
 import {
   ChevronLeft, ChevronRight, Crosshair, Flag, Footprints, GripVertical, Hand, HardHat, Pause, Play,
-  PersonStanding, Shield, Shirt, Sword, Grip, Watch, Wind, X,
+  PersonStanding, Shield, Shirt, Sword, Swords, Grip, Watch, Wind, X,
 } from "lucide-react";
 import Notice from "./Notice.astro";
+import "../styles/loadout.css";
 import { catalog, FEATURED } from "../data/catalog";
-import { sprite } from "../lib/base";
+import { sprite, u } from "../lib/base";
 import { ALL_SLOTS, ARMOR_SLOTS, CHIP_ORDER, SLOT_LABEL, SLOT_RING, emptySprite, type SlotId } from "../lib/slots";
 
 interface Props {
   defaultTab?: "items" | "viewer";
+  /** One mount on a stage that takes the whole width: no ring, no catalogue. */
+  mountStage?: boolean;
 }
-const { defaultTab = "items" } = Astro.props;
+const { defaultTab = "items", mountStage = false } = Astro.props;
 
 const BARE_ICON: Record<SlotId, unknown> = {
   head: HardHat, shoulder: Shield, back: Wind, chest: Shirt, shirt: Shirt, tabard: Flag, wrist: Watch,
@@ -31,6 +34,7 @@ const tabs = [
   { id: "items", label: "Items" },
   { id: "sets", label: "Sets" },
   { id: "customization", label: "Customization" },
+  { id: "loadout", label: "Loadout" },
   { id: "viewer", label: "Viewer" },
 ];
 const facets = ["Cloth", "Leather", "Mail", "Plate"];
@@ -38,24 +42,36 @@ const facets = ["Cloth", "Leather", "Mail", "Plate"];
 // Every sprite this page may draw, as a CSS variable. They are only used under
 // [data-art], so a page with no packs yet requests none of them.
 const spriteNames = ["slot", "slot-worn", "slot-sel", "card-worn", "setcard-worn", "card-flash", "hidden", ...ALL_SLOTS.map(emptySprite)];
-const spriteCss = `:root{${spriteNames.map((n) => `--sp-${n}:url(${sprite(n)})`).join(";")}}`;
 
 // What Customization needs at once. Small: a few dozen bodies, never the item catalogue.
 const roomData = {
   featured: FEATURED?.id ?? "",
+  sprites: spriteNames,
   races: catalog.races.map((r) => ({
     id: r.id,
     name: r.name,
     circle: r.circle,
+    faction: r.faction,
+    group: r.group,
     bodies: r.bodies.map((b) => ({ id: b.id, name: b.name, circle: b.circle, description: b.description ?? r.description, model: b.model })),
   })),
 };
 ---
-<style set:html={spriteCss}></style>
 <script is:inline type="application/json" id="room-data" set:html={JSON.stringify(roomData)}></script>
 
-<div class="room-page" id="room" data-tab={defaultTab} data-default-tab={defaultTab}>
+<div class="room-page" id="room" data-tab={defaultTab} data-default-tab={defaultTab} data-mount-stage={mountStage ? "" : undefined} data-chips-wait>
   <div class="tabs-row">
+    {mountStage && (
+      <div class="mount-head">
+        <a class="btn" href={u("mounts/")} style="height:28px">All mounts</a>
+        <span class="mount-title" id="mount-title"></span>
+        <span class="mount-actions">
+          <button class="pill" type="button" id="mount-loadout" disabled data-tip="Add to Loadout" data-tip-sub="This mount goes in your look's code.">Add to Loadout</button>
+          <button class="pill" type="button" id="mount-rider" data-tip="Rider" data-tip-sub="Sits a body on the seat.">Rider</button>
+          <button class="pill" type="button" id="mount-tools" data-tip="Tools" data-tip-sub="Animations, parts, options, export.">Tools</button>
+        </span>
+      </div>
+    )}
     <div class="tabs" role="tablist" aria-label="Wardrobe view">
       {tabs.map((t) => (
         <button class:list={["pill", { on: t.id === defaultTab }]} type="button" role="tab" data-tab-btn={t.id} aria-selected={t.id === defaultTab ? "true" : "false"}>{t.label}</button>
@@ -129,7 +145,9 @@ const roomData = {
         </button>
         <input class="range" id="strip-scrub" type="range" min="0" max="1" step="0.001" value="0" disabled aria-label="Animation time" data-ignore-arrows-shortcuts="true" />
         <button class="strip-btn" type="button" id="strip-speed" disabled aria-label="Speed" data-tip="Speed" data-tip-sub="T">1x</button>
+        {!mountStage && <button class="strip-btn" type="button" id="strip-sheathe" disabled aria-pressed="false" aria-label="Put weapons away" data-tip="Put weapons away" data-tip-sub="Z"><Swords aria-hidden="true" /></button>}
       </div>
+      {mountStage && <div class="mount-variants" id="mount-variants" hidden aria-label="Colours"></div>}
     </section>
 
     <div class="split-handle" id="split-handle" role="separator" aria-orientation="vertical" aria-label="Resize panels" tabindex="0" data-ignore-arrows-shortcuts="true">
@@ -176,6 +194,9 @@ const roomData = {
       <div class="pane pane-custom" id="custom-root">
         <Notice title="Getting your character ready" body="This fills in by itself in a moment." />
       </div>
+      <div class="pane pane-loadout" id="loadout-root">
+        <Notice title="Getting your loadouts ready" body="This fills in by itself in a moment." />
+      </div>
       <div class="pane pane-viewer" id="viewer-root">
         <Notice title="Getting the tools ready" body="This fills in by itself in a moment." />
       </div>
@@ -190,7 +211,7 @@ const roomData = {
     var room = document.getElementById("room");
     var q = new URLSearchParams(location.search);
     var tab = q.get("tab") || room.dataset.defaultTab;
-    if (["items", "sets", "customization", "viewer"].indexOf(tab) < 0) tab = "items";
+    if (["items", "sets", "customization", "loadout", "viewer"].indexOf(tab) < 0) tab = "items";
     room.dataset.tab = tab;
     room.querySelectorAll("[data-tab-btn]").forEach(function (b) {
       var on = b.getAttribute("data-tab-btn") === tab;
@@ -207,7 +228,7 @@ const roomData = {
     try {
       var w = localStorage.getItem("room-width");
       if (w === "collapsed") split.classList.add("collapsed");
-      else if (w && innerWidth >= 768) split.style.setProperty("--room-w", w + "px");
+      else if (w && innerWidth >= 768 && !room.hasAttribute("data-mount-stage")) split.style.setProperty("--room-w", w + "px");
       if (localStorage.getItem("grid-mode") === "figures") {
         room.querySelectorAll("[data-grid-mode]").forEach(function (b) {
           b.classList.toggle("on", b.getAttribute("data-grid-mode") === "figures");

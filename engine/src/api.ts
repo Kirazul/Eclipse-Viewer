@@ -21,7 +21,7 @@ export interface ViewerEngine {
   /** Creates the renderer and starts nothing until a model loads. */
   mount(canvas: HTMLCanvasElement): Promise<void>;
   /** Newest call wins: an in-flight load is aborted, the old model stays on screen until the new one is ready. */
-  loadModel(modelId: string): Promise<void>;
+  loadModel(modelId: string, lookText?: string): Promise<void>;
   dispose(): void;
 
   // Animation
@@ -49,6 +49,10 @@ export interface ViewerEngine {
   setBackgroundColor(css: string | null): void;
   centerModel(transition?: boolean): void;
   toggleShadows(): void;
+  /** Particles and ribbons on or off. */
+  setEffects(on: boolean): void;
+  /** `.phys` simulation on or off. */
+  setPhysics(on: boolean): void;
   toggleSkeleton(): void;
   toggleAllWireframes(): void;
   setAutoRotationSpeed(radiansPerSecond: number): void;
@@ -64,7 +68,14 @@ export interface ViewerEngine {
   setTextureByHash(hash: number, dataUrl: string): Promise<void>;
   setAutomaticMaterialVisibility(on: boolean): void;
 
-  // Customization (bodies). Geosets toggle instantly; textures re-composite once.
+  // Customization (bodies). Only real choices can be worn: a look is option id -> choice
+  // id. Its textures are ready before the swap, and geosets, composite, bone set and
+  // skinned parts change inside one frame. The tree is fetched on first ask.
+  loadCustomization(): Promise<import("@eclipse/format").CustomizationData | null>;
+  setLook(look: import("@eclipse/format").Look): Promise<void>;
+  /** Fetches what a look needs without showing it: a hovered choice's click is then instant. */
+  prefetchLook(look: import("@eclipse/format").Look): void;
+  /** Not for the UI: a test's hook into the geoset rules. */
   setGeoset(group: number, value: number): void;
 
   // Dressing room (Eclipse's wardrobe). Hover tries on, click wears, ring releases.
@@ -72,6 +83,13 @@ export interface ViewerEngine {
   equip(slot: import("@eclipse/format").SlotId, itemId: string | null): Promise<void>;
   /** Show an item on the figure without committing. null ends the preview. */
   previewEquip(slot: import("@eclipse/format").SlotId, itemId: string | null): Promise<void>;
+  /** Weapons in hand, or on their sheath points. */
+  setSheathed(sheathed: boolean): void;
+  /**
+   * A body on a mount's seat (attachment 0), scaled and posed as retail does. null gets off.
+   * Only a mount's stage has a seat.
+   */
+  setRider(bodyId: string | null): Promise<void>;
   /** Eases the camera to a slot's body region, or to the whole figure when null. */
   focusSlot(slot: import("@eclipse/format").SlotId | null): void;
   /**

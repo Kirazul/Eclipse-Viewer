@@ -1,13 +1,15 @@
 import { BUILD, FORMAT_VERSION, type ClipEntry, type ModelKind, type ModelManifest, type TextureEntry, type TextureKind, paths } from "@eclipse/format";
 import { buildBodyGlb, geosetBounds } from "../gltf/body";
 import { buildClipGlb } from "../gltf/clip";
+import { emitterWarnings } from "../fx/emitters";
 import { encoderReady } from "../gltf/writer";
 import { STAGE, inputKey, log, mapLimit } from "../lib/env";
 import { animName } from "../m2/animNames";
-import { parseDeps } from "../m2/chunks";
+import { chunk, parseDeps } from "../m2/chunks";
 import { M2Model, SEQ_ONE_SHOT, type Sequence, type Skin, parentSkeletonOf, parseSkin } from "../m2/model";
-import { type KeyStats, sampleClip, sampleGrid } from "../m2/sample";
+import { type KeyStats, type SampledClip, globalLoopMotion, sampleClip, sampleGrid } from "../m2/sample";
 import { MissingFile } from "../sources/source";
+import { clipWanted } from "./clips";
 import { type BakeContext, Tracked } from "./context";
 import { buildFx } from "./fx";
 
@@ -41,6 +43,8 @@ export interface ModelLook {
   textures: TextureEntry[];
   composite?: ModelManifest["composite"];
   warnings: string[];
+  /** Fields only this kind of model carries: a body's look, its customization. */
+  manifest?: Partial<ModelManifest>;
 }
 
 export interface ModelSpec {
@@ -54,6 +58,19 @@ export interface ModelSpec {
   jointName?: (bone: number) => string;
   /** Goes into the geometry's key whenever `jointName` is given. */
   jointKey?: string;
+  /** The clip to start on when this model has it: a body's customization stand. */
+  preferClip?: string;
+  /**
+   * Which sequences are baked. Absent: `clipWanted(kind)` decides. A piece of armour has
+   * dozens of cuts and one useful clip, so what it plays is one small file or none.
+   */
+  clipFilter?: (seq: Sequence) => boolean;
+  /** The clip is left out when no bone moves off its bind pose: that clip is identity anyway. */
+  skipStaticClips?: boolean;
+  /** The manifest is returned for the caller to embed, and no object of its own is written. */
+  inline?: boolean;
+  /** Written into the manifest, for a mount's rider. */
+  displayScale?: number;
   look(model: M2Model, skin: Skin, files: Tracked): Promise<ModelLook>;
 }
 
@@ -105,17 +122,20 @@ export async function bakeModel(ctx: BakeContext, spec: ModelSpec): Promise<Bake
   const seen = new Set<string>();
   let aliases = 0;
   if (!spec.noClips) {
+    const wanted = spec.clipFilter ?? clipWanted(spec.kind);
     for (const seq of model.sequences) {
       if (seq.alias) {
         aliases++;
         continue;
       }
+      if (!wanted(seq)) continue;
       const id = `${seq.id}.${seq.variation}`;
       if (seen.has(id)) {
         warnings.push(`sequence ${id} appears twice; kept the first`);
         continue;
       }
       seen.add(id);
+      if (ctx.onlyClips && !ctx.onlyClips.has(id)) continue;
       clipSeqs.push(seq);
     }
   }
@@ -153,21 +173,29 @@ export async function bakeModel(ctx: BakeContext, spec: ModelSpec): Promise<Bake
     }
     const key = `objects/${inputKey("clip", STAGE.clip, skelId, animId, seq.level.name, seq.concrete, id)}.glb`;
     let failed = false;
-    const bytes = await putIfAbsent(ctx, key, async () => {
+    let isStatic = false;
+    let bytes = ctx.force ? null : await ctx.store.stat(key);
+    if (bytes === null) {
       const buffers = await model.clipBuffers(seq, loadAnim);
       if (buffers.form === "missing") {
         failed = true;
-        return new Uint8Array(0);
+      } else {
+        const sampled = sampleClip(model, seq, buffers, sampleGrid(seq.durationMs), stats);
+        globalLoopBones = Math.max(globalLoopBones, sampled.globalLoopBones);
+        if (spec.skipStaticClips && staysInBindPose(sampled)) {
+          isStatic = true;
+        } else {
+          const body = buildClipGlb(id, sampled);
+          await ctx.store.put(key, body);
+          bytes = body.length;
+        }
       }
-      const sampled = sampleClip(model, seq, buffers, sampleGrid(seq.durationMs), stats);
-      globalLoopBones = Math.max(globalLoopBones, sampled.globalLoopBones);
-      return buildClipGlb(id, sampled);
-    });
+    }
     if (failed) {
-      await ctx.store.remove(key);
       warnings.push(`clip ${id} (${animName(seq.id)}): .anim ${animFdid} unavailable, not baked`);
       return null;
     }
+    if (isStatic || bytes === null) return null;
     return {
       id,
       name: animName(seq.id),
@@ -180,31 +208,46 @@ export async function bakeModel(ctx: BakeContext, spec: ModelSpec): Promise<Bake
     };
   });
   const clips = clipResults.filter((c): c is ClipEntry => c !== null);
-  if (globalLoopBones) warnings.push(`${globalLoopBones} bone(s) run on a global loop: baked into each clip's time, so they restart with the clip`);
+  // Measured on Human male: 38 of its 39 global-loop tracks hold one value, and the last
+  // is a 3 % scale over a 25-minute loop, so a clip restarting them changes nothing. Only a
+  // track that visibly moves is worth a line in the report.
+  void globalLoopBones;
+  const moving = globalLoopMotion(model);
+  if (moving) warnings.push(`${moving} bone track(s) move on a global loop under a minute: baked into each clip's time, so they restart with the clip`);
   if (aliases) log(`  ${spec.id}: ${aliases} alias sequences skipped`);
 
   // ---------------------------------------------------------------- fx, phys
   const fxKey = `objects/${inputKey("fx", STAGE.fx, skelId)}.json`;
-  const fxBytes = await putIfAbsent(ctx, fxKey, async () => {
+  // Most armour animates nothing: no fx is no object and no fetch.
+  let fxBytes = ctx.force ? null : await ctx.store.stat(fxKey);
+  if (fxBytes === null) {
     const fx = await buildFx(
       model,
       clipSeqs,
       async (seq) => (await model.clipBuffers(seq, loadAnim)).model,
       stats,
     );
-    return Buffer.from(JSON.stringify(fx));
-  });
+    if (!fxIsEmpty(fx)) {
+      const body = Buffer.from(JSON.stringify(fx));
+      await ctx.store.put(fxKey, body);
+      fxBytes = body.length;
+    }
+  }
   if (stats.short) warnings.push(`${stats.short} keyframe array(s) overrun their .anim (bones added after the file was cut): those tracks hold`);
-  if (model.particleCount) warnings.push(`${model.particleCount} particle emitter(s) not baked yet (later milestone)`);
-  if (model.ribbonCount) warnings.push(`${model.ribbonCount} ribbon(s) not baked yet (later milestone)`);
-  if (model.boneFiles.length) warnings.push(`${model.boneFiles.length} .bone file(s) (face bone sets) not carried yet: the bind pose of the default face is unadjusted`);
+  warnings.push(...emitterWarnings(model));
   const billboard = model.bones.filter((b) => b.flags & 0x78).length;
   if (billboard) warnings.push(`${billboard} billboard bone(s): camera-facing behaviour is not in the clips`);
   if (deps.recursive.length || deps.geometryParticle.length) warnings.push(`model references ${deps.recursive.length + deps.geometryParticle.length} recursive or geometry-particle model(s), not baked yet`);
 
   let phys: { key: string; bytes: number } | undefined;
   const physFdid = deps.phys[0];
-  if (physFdid) {
+  // Nearly every physics model carries it inline (PFDC); PFID names a file (one measured
+  // of the 8,240 emitter or physics models in the local cache).
+  const inlinePhys = chunk(model.chunks, "PFDC");
+  if (inlinePhys) {
+    const key = `objects/${inputKey("phys", STAGE.phys, m2File.id, "PFDC")}.phys`;
+    phys = { key, bytes: await putIfAbsent(ctx, key, () => inlinePhys) };
+  } else if (physFdid) {
     try {
       const f = await files.read(physFdid);
       const key = `objects/${inputKey("phys", STAGE.phys, f.id)}.phys`;
@@ -215,7 +258,7 @@ export async function bakeModel(ctx: BakeContext, spec: ModelSpec): Promise<Bake
   }
 
   // ---------------------------------------------------------------- manifest
-  const defaultClip = clips.find((c) => c.id === "0.0")?.id ?? clips[0]?.id ?? "";
+  const defaultClip = clips.find((c) => c.id === spec.preferClip)?.id ?? clips.find((c) => c.id === "0.0")?.id ?? clips[0]?.id ?? "";
   if (!defaultClip && !spec.noClips) warnings.push("no clip was baked");
 
   const manifest: ModelManifest = {
@@ -226,10 +269,12 @@ export async function bakeModel(ctx: BakeContext, spec: ModelSpec): Promise<Bake
     build: BUILD.version,
     source: { m2: spec.m2, skin: deps.skin[0], ...(skelFdid ? { skel: skelFdid } : {}) },
     glb: { key: glbKey, bytes: glbBytes },
-    fx: { key: fxKey, bytes: fxBytes },
+    ...(fxBytes !== null ? { fx: { key: fxKey, bytes: fxBytes } } : {}),
     ...(phys ? { phys } : {}),
     bounds,
     boneCount: model.bones.length,
+    // A collection's nodes are the body's: only a model that plays its own clips needs these.
+    ...(spec.noClips && !phys ? {} : { pivots: pivotsOf(model) }),
     clips,
     defaultClip,
     textures: look.textures,
@@ -237,10 +282,44 @@ export async function bakeModel(ctx: BakeContext, spec: ModelSpec): Promise<Bake
     ...(look.composite ? { composite: look.composite } : {}),
     attachments: model.attachments.map((a) => ({ id: a.id, bone: a.bone, position: [a.position[1], a.position[2], a.position[0]] })),
     warnings: [...new Set(warnings)],
+    ...look.manifest,
+    boneCrcs: model.bones.map((b) => b.crc),
+    defaultTextures: defaultTextures(model, skin, look.geosets, look.textures),
+    ...(spec.displayScale !== undefined ? { displayScale: spec.displayScale } : {}),
   };
-  await ctx.store.put(paths.manifest(spec.id), Buffer.from(JSON.stringify(manifest)));
+  if (!spec.inline) await ctx.store.put(paths.manifest(spec.id), Buffer.from(JSON.stringify(manifest)));
 
   return { manifest, sizes: sizesOf(manifest, model, skin, look.geosets), inputs: files.inputs };
+}
+
+/** A sampled clip drops every track equal to the rest pose. Nothing left: it draws the bind pose. */
+export function staysInBindPose(clip: SampledClip): boolean {
+  return clip.tracks.length === 0;
+}
+
+/** The textures the visible batches read and the file holds: fetched first, the rest when shown. */
+export function defaultTextures(model: M2Model, skin: Skin, visible: ReadonlySet<number>, textures: readonly TextureEntry[]): number[] {
+  const used = new Set<number>();
+  for (const b of skin.batches) {
+    const s = skin.submeshes[b.submesh];
+    if (!s || !visible.has(s.id)) continue;
+    for (let k = 0; k < b.textureCount; k++) {
+      const t = model.texLookup[b.textureCombo + k];
+      if (t !== undefined && t >= 0 && textures[t]?.key) used.add(t);
+    }
+  }
+  return [...used].sort((a, b) => a - b);
+}
+
+/** Nothing moves and nothing emits. */
+export function fxIsEmpty(fx: object): boolean {
+  return Object.values(fx).every((v) => !Array.isArray(v) || v.length === 0);
+}
+
+/** Flat xyz per retail bone, in the baker's axes. 0.01 mm is far below a pixel, and these digits are bytes. */
+function pivotsOf(model: M2Model): number[] {
+  const round = (v: number) => Math.round(v * 1e5) / 1e5;
+  return model.bones.flatMap((b) => [round(b.pivot[1]), round(b.pivot[2]), round(b.pivot[0])]);
 }
 
 function sizesOf(m: ModelManifest, model: M2Model, skin: Skin, visible: Set<number>): Record<string, number> {

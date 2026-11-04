@@ -1,13 +1,14 @@
 /**
  * The look lives in the URL, so a link is the outfit:
- *   /wardrobe/?body=human-male&look=head:123,chest:456&clip=4.0&tab=viewer
+ *   /wardrobe/?body=human-male&look=head:123,chest:456&choices=11.46,12.62&clip=4.0&tab=viewer
  * Everything is read on the client: GitHub Pages has no server to read it.
  */
 import { $currentClip } from "@eclipse/engine/stores";
 import type { SlotId } from "@eclipse/format";
 import { u } from "../base";
+import { $shareQuery } from "../share/state";
 import { isSlot } from "../slots";
-import { $body, $geosets, $scene, $slot, $tab, $worn, DEFAULT_SCENE, TABS, type Tab } from "./state";
+import { $body, $lookText, $scene, $slot, $tab, $worn, DEFAULT_SCENE, TABS, type Tab } from "./state";
 
 export interface RoomUrl {
   body: string | null;
@@ -15,9 +16,12 @@ export interface RoomUrl {
   slot: SlotId | null;
   look: Partial<Record<SlotId, string>>;
   clip: string | null;
-  geo: Record<number, number>;
+  /** Customization choices, `<option>.<choice>,...`. A value the body doesn't offer is dropped when it loads. */
+  choices: string;
   scene: string | null;
   tryItem: string | null;
+  /** An `ECA1:` loadout code, whole: it holds what `body` and `look` can't. */
+  code: string | null;
 }
 
 export function readUrl(): RoomUrl {
@@ -27,11 +31,6 @@ export function readUrl(): RoomUrl {
     const [slot, id] = part.split(":");
     if (isSlot(slot) && id) look[slot] = id;
   }
-  const geo: RoomUrl["geo"] = {};
-  for (const part of (q.get("geo") ?? "").split(",")) {
-    const [g, v] = part.split(".").map(Number);
-    if (Number.isInteger(g) && Number.isInteger(v)) geo[g!] = v!;
-  }
   const tab = q.get("tab");
   const slot = q.get("slot");
   return {
@@ -40,9 +39,11 @@ export function readUrl(): RoomUrl {
     slot: isSlot(slot) ? slot : null,
     look,
     clip: q.get("clip"),
-    geo,
+    choices: q.get("choices") ?? "",
     scene: q.get("scene"),
     tryItem: q.get("try"),
+    // A raw + in a pasted link reads as a space; base64 has no spaces to confuse it with.
+    code: q.get("code")?.replace(/ /g, "+") || null,
   };
 }
 
@@ -52,13 +53,14 @@ function write() {
   if (body) parts.push(`body=${encodeURIComponent(body)}`);
   const worn = Object.entries($worn.get());
   if (worn.length) parts.push(`look=${worn.map(([s, id]) => `${s}:${encodeURIComponent(id ?? "")}`).join(",")}`);
-  const geo = Object.entries($geosets.get());
-  if (geo.length) parts.push(`geo=${geo.map(([g, v]) => `${g}.${v}`).join(",")}`);
+  const choices = $lookText.get();
+  if (choices) parts.push(`choices=${choices}`);
   const clip = $currentClip.get();
   if (clip && !defaultClip(clip)) parts.push(`clip=${encodeURIComponent(clip)}`);
   if ($tab.get() !== "items") parts.push(`tab=${$tab.get()}`);
   if ($slot.get() !== "head") parts.push(`slot=${$slot.get()}`);
   if ($scene.get() !== DEFAULT_SCENE) parts.push(`scene=${encodeURIComponent($scene.get())}`);
+  if ($shareQuery.get()) parts.push($shareQuery.get());
   const next = `${u("wardrobe/")}${parts.length ? `?${parts.join("&")}` : ""}`;
   if (next !== location.pathname + location.search) history.replaceState(history.state, "", next);
 }
@@ -76,7 +78,7 @@ export function startUrlSync(firstClip: () => string | null) {
       write();
     }, 120);
   };
-  for (const store of [$body, $worn, $geosets, $currentClip, $tab, $slot, $scene]) {
+  for (const store of [$body, $worn, $lookText, $currentClip, $tab, $slot, $scene, $shareQuery]) {
     store.listen(schedule);
   }
 }

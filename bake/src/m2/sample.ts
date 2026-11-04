@@ -198,6 +198,41 @@ function bindTrack(model: M2Model, seq: Sequence, buffers: ClipBuffers, bone: nu
   return { keys: readKeys(rec, h, seq.concrete, buffers.bones, kind, stats), loop: 0, gseq: -1 };
 }
 
+/**
+ * How many bone tracks really move on a global loop short enough to see: a clip restarts
+ * them, since each is baked into the clip's time. Retail's Human male has 39 such tracks
+ * and none counts: 38 hold one value, and one is a 3 % scale over 25 minutes.
+ */
+export function globalLoopMotion(model: M2Model, shortestUnseenMs = 60_000, epsilon = 1e-3): number {
+  let moving = 0;
+  const fields: [number, ValueKind][] = [[OFF_TRANS, "vec3"], [OFF_ROT, "quat16"], [OFF_SCALE, "vec3"]];
+  for (const level of model.levels) {
+    for (let b = 0; b < level.boneCount; b++) {
+      for (const [field, kind] of fields) {
+        const h = readTrackHeader(level.boneBuf, level.boneOff + b * BONE_BYTES + field);
+        if (h.gseq < 0 || (level.gloops[h.gseq] ?? 0) > shortestUnseenMs) continue;
+        const keys = readKeys(level.boneBuf, h, 0, level.boneBuf, kind);
+        if (!keys) continue;
+        const s = keys.stride;
+        for (let c = 0; c < s; c++) {
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (let i = 0; i < keys.times.length; i++) {
+            const v = keys.values[i * s + c]!;
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+          }
+          if (hi - lo > epsilon) {
+            moving++;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return moving;
+}
+
 export interface BoneSampler {
   /** The bone's retail-space TRS at t ms. Absent tracks give identity. */
   trs(t: number, trans: Float64Array, rot: Float64Array, scale: Float64Array): void;

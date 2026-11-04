@@ -4,7 +4,7 @@
  */
 import { useStore } from "@nanostores/react";
 import {
-  $autoRotationSpeed, $autoVisibility, $backgroundColor, $hoveredPart, $manifest, $parts, $paused, $shadows, $skeleton, $timeScale, $watermark, $wireframe,
+  $autoRotationSpeed, $autoVisibility, $backgroundColor, $effects, $hoveredPart, $manifest, $parts, $paused, $physics, $shadows, $skeleton, $timeScale, $watermark, $wireframe,
   type PartRow,
 } from "@eclipse/engine/stores";
 import { ChevronDown, ChevronLeft, ChevronRight, CircleDot, Box, Clapperboard, Cuboid, Film, Image, Info, Layers, Pause, Play, SlidersHorizontal, Square, Upload, Download, Ellipsis } from "lucide-react";
@@ -185,6 +185,8 @@ function sceneLabel(s: string) {
 function Options() {
   const engine = useStore($engine);
   const shadows = useStore($shadows);
+  const effects = useStore($effects);
+  const physics = useStore($physics);
   const watermark = useStore($watermark);
   const skeleton = useStore($skeleton);
   const wireframe = useStore($wireframe);
@@ -215,6 +217,8 @@ function Options() {
     <>
       <div className="opt-grid">
         <Toggle id="toggle-shadows" label="Shadows" checked={shadows} onChange={() => engine?.toggleShadows()} />
+        <Toggle id="toggle-effects" label="Effects" checked={effects} onChange={(v) => engine?.setEffects(v)} />
+        <Toggle id="toggle-physics" label="Physics" checked={physics} onChange={(v) => engine?.setPhysics(v)} />
         <Toggle id="toggle-scene" label="Scene" checked={scene !== "off"} onChange={(v) => { if (v) setBackground(null); $scene.set(v ? DEFAULT_SCENE : "off"); }} />
       </div>
       <div>

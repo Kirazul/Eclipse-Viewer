@@ -27,7 +27,8 @@ import { CAMERA, CELLS } from "../constants";
 import { FrameStatsRing } from "../logic/frameStats";
 import { WEAPON_SLOTS, slotView } from "../logic/slots";
 import { fetchJson, isAbort } from "../net/fetchPack";
-import { ModelAssets, type LoadEnv } from "../model/assets";
+import { ModelAssets, registerManifests, type LoadEnv } from "../model/assets";
+import { whiteTexture } from "../model/loaders";
 import { Figure } from "../model/figure";
 import { CompositeRenderer } from "../wow/composite";
 import { ItemLibrary, planOutfit, type Piece, type ResolvedItem } from "../wow/outfit";
@@ -52,6 +53,7 @@ interface Cell {
   body: SharedBody | null;
   visibleGeosets: ReadonlySet<number> | null;
   composite: Texture | null;
+  wornTextures: ReadonlyMap<number, Texture>;
   pieces: readonly Piece[];
   /** World box this cell frames. */
   focus: { min: Vec3; max: Vec3 } | null;
@@ -165,6 +167,7 @@ export class FigureCells {
       body: null,
       visibleGeosets: null,
       composite: null,
+      wornTextures: new Map(),
       pieces: [],
       focus: null,
       onScreen: false,
@@ -229,8 +232,9 @@ export class FigureCells {
       const h = Math.max(1, c.height >> (CELLS.compositeDivisor - 1));
       const k = w / c.width;
       const layers = assets.layers.flatMap(({ layer, texture }) =>
-        texture ? [{ rect: scaled(layer.rect, k), blend: layer.blend, texture }] : [],
+        texture && layer.targetType === 1 ? [{ rect: scaled(layer.rect, k), blend: layer.blend, texture }] : [],
       );
+      if (assets.manifest.boneSet) figure.setBoneSet(assets.manifest.boneSet);
       figure.baseComposite = this.composer.render(w, h, layers, 2);
       shared.base = figure.baseComposite.texture;
       figure.setComposite(shared.base);
@@ -263,6 +267,7 @@ export class FigureCells {
       for (const [slot, id] of Object.entries(set.pieces)) worn.set(slot as SlotId, id);
     } else if (itemId) {
       const item = await fetchJson<ItemManifest>(packUrl(this.env.base, paths.item(itemId)), { signal });
+      registerManifests(item.models);
       focusSlot = item.slot;
       if (WEAPON_SLOTS.includes(item.slot) && item.attached?.[0]) {
         // A weapon stands alone in its cell.
@@ -298,6 +303,8 @@ export class FigureCells {
     cell.pieces = plan.pieces;
     cell.visibleGeosets = plan.visible;
     cell.composite = this.compositeFor(body, plan);
+    cell.wornTextures = plan.wornTextures;
+    for (const t of plan.wornTextures.values()) this.renderer.initTexture(t);
 
     const bounds = body.figure.assets.manifest.bounds;
     cell.focus = alone || !focusSlot ? bounds : slotView(focusSlot, bounds);
@@ -449,6 +456,7 @@ export class FigureCells {
     const figure = body.figure;
     for (const part of figure.parts) {
       part.mesh.visible = part.ready && (cell.visibleGeosets?.has(part.extras.geoset) ?? part.shown);
+      for (const w of part.worn) part.material.uniforms[UNIT_KEYS[w.unit]!].value = cell.wornTextures.get(w.type) ?? whiteTexture();
       if (part.usesComposite.length) {
         part.usesComposite.forEach((used, i) => {
           if (used) part.material.uniforms[UNIT_KEYS[i]!].value = cell.composite;

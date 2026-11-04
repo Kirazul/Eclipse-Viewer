@@ -24,7 +24,7 @@ test.describe("service worker", () => {
 
   test("a repeat visit makes zero network requests for hashed assets", async ({ page }) => {
     await mockPacks(page);
-    await page.goto("races/");
+    await page.goto("about/");
     await seeded(page);
     await resetHits(page);
     await page.reload();
@@ -34,7 +34,7 @@ test.describe("service worker", () => {
     console.log("second visit hit the network for:", JSON.stringify(after));
     expect(after.filter((p) => p.includes("/_astro/"))).toEqual([]);
     // And HTML still goes to the network: a deploy is seen on the next load.
-    expect(after).toContain("/Eclipse-Viewer/races/");
+    expect(after).toContain("/Eclipse-Viewer/about/");
     const fromSw = await page.evaluate(() => performance.getEntriesByType("resource").filter((e) => e.name.includes("/_astro/")).every((e) => (e as PerformanceResourceTiming).transferSize === 0));
     expect(fromSw).toBe(true);
   });

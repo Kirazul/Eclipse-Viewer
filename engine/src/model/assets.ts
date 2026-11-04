@@ -97,6 +97,21 @@ export class ClipStore {
   }
 }
 
+/**
+ * ModelManifests an item carried inline: its dozens of per-race pieces are one file, so a
+ * hover costs one fetch and not dozens. Whoever read the item registers them here.
+ */
+const inlineManifests = new Map<string, ModelManifest>();
+const INLINE_KEPT = 6000;
+
+export function registerManifests(models: Record<string, ModelManifest> | undefined): void {
+  if (!models) return;
+  for (const [id, m] of Object.entries(models)) inlineManifests.set(id, m);
+  if (inlineManifests.size > INLINE_KEPT) {
+    for (const id of [...inlineManifests.keys()].slice(0, inlineManifests.size - INLINE_KEPT)) inlineManifests.delete(id);
+  }
+}
+
 export class ModelAssets {
   readonly textures: (Texture | null)[];
   readonly layers: { layer: CompositeLayer; texture: Texture | null }[] = [];
@@ -120,11 +135,13 @@ export class ModelAssets {
   }
 
   static async load(id: string, env: LoadEnv, run: LoadRun): Promise<ModelAssets> {
-    const manifest = await fetchJson<ModelManifest>(packUrl(env.base, paths.manifest(id)), {
-      signal: run.signal,
-      priority: "high",
-      onBytes: run.onBytes,
-    });
+    const manifest =
+      inlineManifests.get(id) ??
+      (await fetchJson<ModelManifest>(packUrl(env.base, paths.manifest(id)), {
+        signal: run.signal,
+        priority: "high",
+        onBytes: run.onBytes,
+      }));
     if (manifest.formatVersion > FORMAT_VERSION) {
       throw new Error(`pack format ${manifest.formatVersion} is newer than this engine (${FORMAT_VERSION})`);
     }
@@ -171,7 +188,7 @@ export class ModelAssets {
 
     const startTexture = async (index: number): Promise<void> => {
       const entry = manifest.textures[index]!;
-      if (!entry.key) return;
+      if (!entry.key || this.disposed) return;
       expect(entry.bytes);
       const bytes = await fetchBytes(url(entry.key), { ...high, expected: entry.bytes });
       const texture = await parseTexture(env.renderer, bytes, env.anisotropy());
@@ -184,15 +201,31 @@ export class ModelAssets {
       this.onTexture?.(index);
     };
 
-    // Every texture starts now, since what the default look needs is known only once
-    // the GLB is parsed, and the look is what it waits for. A lite preview waits for
-    // the GLB instead and fetches only those: it will never show anything else.
+    // What the default look needs starts now, when the manifest says which: a texture only
+    // a hidden geoset reads costs a read of the bucket per visitor and waits until it shows.
+    // A manifest from before that says nothing, and every texture starts at once. A lite
+    // preview waits for the GLB instead: it will never show anything else.
     const started = new Map<number, Promise<void>>();
-    if (!run.lite) manifest.textures.forEach((_, i) => started.set(i, startTexture(i)));
+    const begin = (i: number): Promise<void> => {
+      let p = started.get(i);
+      if (!p) {
+        p = startTexture(i);
+        started.set(i, p);
+      }
+      return p;
+    };
+    this.startLazyTexture = (i) => {
+      void begin(i).catch((err) => reportBackground(err, manifest.textures[i]?.key));
+    };
+    this.startAllTextures = () => Promise.allSettled(manifest.textures.map((_, i) => begin(i))).then(() => undefined);
+    if (!run.lite) {
+      if (manifest.defaultTextures) for (const i of manifest.defaultTextures) void begin(i).catch(() => undefined);
+      else manifest.textures.forEach((_, i) => begin(i));
+    }
 
     this.gltf = await parseGlb(await glb);
     const needed = this.texturesForDefaultLook();
-    if (run.lite) for (const i of needed) started.set(i, startTexture(i));
+    for (const i of needed) begin(i);
     const required = [...needed].map((i) => started.get(i)!);
     // The rest may finish later or not at all: that only keeps a hidden part hidden.
     for (const [i, p] of started) {
@@ -219,6 +252,18 @@ export class ModelAssets {
       }
     });
     return out;
+  }
+
+  /** A hidden geoset's texture is wanted now. Safe to ask twice. */
+  requestTexture(index: number): void {
+    this.startLazyTexture?.(index);
+  }
+  private startLazyTexture: ((index: number) => void) | null = null;
+  private startAllTextures: (() => Promise<void>) | null = null;
+
+  /** Somebody opened the Customization tab: a choice must switch at once, so the rest come now. */
+  allTextures(): Promise<void> {
+    return this.startAllTextures?.() ?? Promise.resolve();
   }
 
   /** This texture now lives and dies with the model. */
@@ -251,6 +296,38 @@ export class ModelAssets {
       this.own(variant);
     }
     return variant;
+  }
+
+  /** A look's texture for a unit: WebGL wraps per texture, so a differing unit gets a clone. */
+  wrapped(texture: Texture, wrapS: boolean, wrapT: boolean): Texture {
+    // A render target's wrap is set when it's made: a model texture's composite repeats.
+    if ((texture as Texture & { isRenderTargetTexture?: boolean }).isRenderTargetTexture) return texture;
+    const s = wrapS ? RepeatWrapping : ClampToEdgeWrapping;
+    const t = wrapT ? RepeatWrapping : ClampToEdgeWrapping;
+    if (!texture.userData.wrapSet) {
+      texture.wrapS = s;
+      texture.wrapT = t;
+      texture.userData.wrapSet = true;
+      texture.needsUpdate = true;
+      return texture;
+    }
+    if (texture.wrapS === s && texture.wrapT === t) return texture;
+    const key = `${texture.uuid}:${s}:${t}`;
+    let variant = this.variants.get(key);
+    if (!variant) {
+      variant = texture.clone();
+      variant.wrapS = s;
+      variant.wrapT = t;
+      variant.needsUpdate = true;
+      this.variants.set(key, variant);
+      this.own(variant);
+    }
+    return variant;
+  }
+
+  /** For whoever finishes a fetch after the model has left. */
+  get disposedNow(): boolean {
+    return this.disposed;
   }
 
   dispose(): void {

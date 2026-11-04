@@ -71,7 +71,7 @@ describe("R2 store, against a fake S3", () => {
     await store.put("catalog/catalog.json", Buffer.from("{}"));
     expect(objects.get("objects/abc.ktx2")!.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(objects.get("objects/abc.ktx2")!.headers["content-type"]).toBe("image/ktx2");
-    expect(objects.get("models/human-male/manifest.json")!.headers["cache-control"]).toBe("public, max-age=300");
+    expect(objects.get("models/human-male/manifest.json")!.headers["cache-control"]).toBe("public, max-age=3600");
     expect(objects.get("catalog/catalog.json")!.headers["cache-control"]).toBe("public, max-age=300");
   });
 
@@ -120,7 +120,9 @@ describe("content types and cache rules", () => {
   it("covers what the baker writes", () => {
     expect(contentTypeOf("objects/a.webp")).toBe("image/webp");
     expect(contentTypeOf("objects/a.phys")).toBe("application/octet-stream");
-    expect(cacheControlOf("ui/empty-ranged.webp")).toBe("public, max-age=300");
+    expect(cacheControlOf("ui/atlas.webp")).toBe("public, max-age=3600");
+    expect(cacheControlOf("items/item-1/manifest.json")).toBe("public, max-age=3600");
+    expect(cacheControlOf("catalog/catalog.json")).toBe("public, max-age=300");
     expect(cacheControlOf("objects/a.webp")).toContain("immutable");
   });
 });

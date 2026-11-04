@@ -20,7 +20,8 @@ export default defineConfig({
   fullyParallel: false,
   use: { baseURL: "http://localhost:4329/Eclipse-Viewer/", trace: "off" },
   testIgnore: hasEngine ? [] : ["**/real.pw.ts"],
-  webServer: [
+  // A server of your own (REAL_BASE, see lines.pw.ts): several runs at once won't share one.
+  webServer: process.env.REAL_BASE ? undefined : [
     {
       command: "node tests/site/build-and-serve.mjs",
       cwd: root,

@@ -137,11 +137,95 @@ export function padBits(flags: number, modelTypes: readonly [number, number]): n
  * The texture a model slot wears. Prefers a file for this race and sex, then for the
  * sex, then any: a slot with one file names it whatever its row says.
  */
-export function pickTexture(files: TextureFile[], race: number, sex: number): TextureFile | undefined {
+export function pickTexture(files: TextureFile[], race: number, sex: number, chain: readonly RaceSex[] = []): TextureFile | undefined {
   const diffuse = files.filter((f) => f.usage === 0);
   const pool = diffuse.length ? diffuse : files;
-  const sexOk = (f: TextureFile) => f.sex !== 0 && f.sex !== 1 ? true : f.sex === sex;
-  return pool.find((f) => f.race === race && sexOk(f)) ?? pool.find((f) => f.race === 0 && sexOk(f)) ?? pool.find(sexOk) ?? pool[0];
+  const sexOk = (f: TextureFile, s = sex) => f.sex !== 0 && f.sex !== 1 ? true : f.sex === s;
+  const own = pool.find((f) => f.race === race && sexOk(f));
+  if (own) return own;
+  for (const [r, s] of chain) {
+    const hit = pool.find((f) => f.race === r && sexOk(f, s));
+    if (hit) return hit;
+  }
+  return pool.find((f) => f.race === 0 && sexOk(f)) ?? pool.find((f) => sexOk(f)) ?? pool[0];
+}
+
+/** A race and sex: 0 male, 1 female. */
+export type RaceSex = readonly [race: number, sex: number];
+
+/**
+ * The file a body wears, as retail 12.1 `sub_10005F080` picks it: this race and sex, then
+ * ChrRaces' Male/FemaleModelFallback in turn, then a race-agnostic file. A class-locked
+ * cut is passed over while anything else fits, and worn if nothing does: nothing in the
+ * catalogue is locked to a class. Undefined: retail draws nothing here, and only a
+ * donor can show it.
+ */
+export function fileForBody(models: ModelFile[], raceId: number, sex: number, chain: readonly RaceSex[] = []): ModelFile | undefined {
+  const sexFits = (m: ModelFile, s: number) => m.sex === s || (m.sex !== 0 && m.sex !== 1);
+  const look = (open: (m: ModelFile) => boolean): ModelFile | undefined => {
+    const own = models.find((m) => open(m) && m.race === raceId && sexFits(m, sex));
+    if (own) return own;
+    for (const [r, s] of chain) {
+      const hit = models.find((m) => open(m) && m.race === r && sexFits(m, s));
+      if (hit) return hit;
+    }
+    return models.find((m) => open(m) && m.race === 0 && sexFits(m, sex));
+  };
+  return look((m) => m.classId === 0) ?? look(() => true);
+}
+
+/** Steps through a ChrRaces fallback column until it ends or comes back round. */
+export function fallbackChain(start: RaceSex, step: (at: RaceSex) => RaceSex | null): RaceSex[] {
+  const out: RaceSex[] = [];
+  const seen = new Set([`${start[0]}.${start[1]}`]);
+  let at = step(start);
+  while (at && !seen.has(`${at[0]}.${at[1]}`)) {
+    seen.add(`${at[0]}.${at[1]}`);
+    out.push(at);
+    at = step(at);
+  }
+  return out;
+}
+
+/** Item.SheatheType -> where it rests [main hand, off hand]: 0x4EAF5C, 0x4EAF48 in the 3.3.5 client. */
+const SHEATH_POINTS: Record<number, readonly [number, number]> = {
+  1: [26, 27], // over the shoulder
+  2: [30, 31], // polearm, staff: from its balance point
+  3: [32, 33], // the hip
+  4: [28, 28], // a shield on the back
+  // Retail's later types have no 3.3.5 slot: these rest as a hip weapon.
+  6: [32, 33],
+  7: [32, 33],
+  8: [32, 33],
+};
+
+export function sheathPointsOf(sheatheType: number): readonly [number, number] | undefined {
+  return SHEATH_POINTS[sheatheType];
+}
+
+/**
+ * A TransformMatrix row as retail builds it (0x10012BAE0, Eclipse's
+ * midnight_tables.transform_matrix): a rotation Rz(yaw) Ry(pitch) Rx(roll) x scale, and
+ * Pos. Returned column-major in the baker's axes: retail (x, y, z) is baked (y, z, x).
+ */
+export function sheathMatrix(pos: readonly [number, number, number], yawDeg: number, pitchDeg: number, rollDeg: number, scale: number): number[] {
+  const k = 0.017453292;
+  const [y, p, r] = [yawDeg * k, pitchDeg * k, rollDeg * k];
+  const [cy, sy, cp, sp, cr, sr] = [Math.cos(y), Math.sin(y), Math.cos(p), Math.sin(p), Math.cos(r), Math.sin(r)];
+  const Rz = [[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]];
+  const Ry = [[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]];
+  const Rx = [[1, 0, 0], [0, cr, -sr], [0, sr, cr]];
+  const mul = (a: number[][], b: number[][]) => a.map((row) => [0, 1, 2].map((j) => row[0]! * b[0]![j]! + row[1]! * b[1]![j]! + row[2]! * b[2]![j]!));
+  const R = mul(Rz, mul(Ry, Rx));
+  // Baked axis i is retail axis map[i].
+  const map = [1, 2, 0];
+  const out = new Array<number>(16).fill(0);
+  for (let c = 0; c < 3; c++) {
+    for (let row = 0; row < 3; row++) out[c * 4 + row] = R[map[row]!]![map[c]!]! * scale;
+    out[12 + c] = pos[map[c]!]!;
+  }
+  out[15] = 1;
+  return out;
 }
 
 /** Which geoset group a slot owns, and which AttachmentGeosetGroup column drives it. */

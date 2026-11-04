@@ -3,9 +3,9 @@
  * the ViewerEngine contract against the same stores, so the panels and the room can
  * be proven without WebGL or packs. Every call lands in `window.__engineCalls`.
  */
-import { $autoRotationSpeed, $autoVisibility, $backgroundColor, $clipLoading, $clips, $currentClip, $error, $loading, $manifest, $parts, $paused, $playlist, $progress, $shadows, $skeleton, $timeScale, $watermark, $wireframe } from "@eclipse/engine/stores";
+import { $autoRotationSpeed, $autoVisibility, $backgroundColor, $clipLoading, $clips, $currentClip, $customization, $effects, $error, $look, $loading, $manifest, $parts, $paused, $physics, $playlist, $progress, $shadows, $skeleton, $timeScale, $watermark, $wireframe } from "@eclipse/engine/stores";
 import type { EngineOptions, ViewerEngine } from "@eclipse/engine/api";
-import type { ClipEntry, ModelManifest } from "@eclipse/format";
+import type { ClipEntry, CustomizationData, Look, ModelManifest } from "@eclipse/format";
 
 interface Win extends Window {
   __engineCalls?: { name: string; args: unknown[]; at: number }[];
@@ -26,8 +26,31 @@ function manifestFor(id: string): ModelManifest {
     formatVersion: 1, id, kind: id.startsWith("mount") ? "mount" : "body", name: id.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()), build: "stub",
     source: { m2: 0, skin: 0 }, glb: { key: "", bytes: 0 }, bounds: { min: [0, 0, 0], max: [1, 2, 1] }, boneCount: 1, clips: CLIPS, defaultClip: "0.0", textures: [],
     defaultGeosets: [1, 101, 701], attachments: [], warnings: [],
+    ...(id.startsWith("mount") ? {} : { customization: { key: "stub", bytes: 1 }, look: STUB_LOOK }),
   };
 }
+
+const STUB_LOOK: Look = { 1: 10, 2: 20, 3: 30 };
+const stubCustomization = (id: string): CustomizationData => ({
+  formatVersion: 1, id, chrModel: 1, width: 1024, height: 512, textures: [], boneSets: [], layers: [], modelTextures: [], baseMats: [], parts: [], owned: [], has: [],
+  tabs: [{ id: 2, name: "Face", order: 1, zoom: 100 }, { id: 23, name: "Mirror", order: 2, zoom: 100 }],
+  options: [
+    { id: 1, name: "Hair Style", tab: 2, choices: [
+      { id: 10, name: "Peasant", req: 3, cls: -1, geo: [[0, 2, 0]] },
+      { id: 11, name: "Soldier", req: 3, cls: -1, geo: [[0, 3, 0]] },
+      { id: 12, name: "Monk", req: 3, cls: -1, geo: [[0, 4, 0]] },
+    ] },
+    { id: 2, name: "Hair Color", tab: 2, choices: [
+      { id: 20, name: "", sw: ["#3a3a3c"], req: 3, cls: -1, geo: [[3, 2, 0]] },
+      { id: 21, name: "Blonde", sw: ["#c8a040", "#a08030"], req: 3, cls: -1, geo: [[3, 3, 0]] },
+      { id: 22, name: "", sw: ["#301010"], req: 3, cls: 32, geo: [[3, 4, 0]] },
+    ] },
+    { id: 3, name: "Ears", tab: 23, choices: [
+      { id: 30, name: "Round", req: 3, cls: -1, geo: [[7, 2, 0]] },
+      { id: 31, name: "Point", req: 3, cls: -1, geo: [[7, 3, 0]] },
+    ] },
+  ],
+});
 
 const PARTS = [
   { hash: 1, name: "Body", geoset: 1 }, { hash: 2, name: "Hair 1", geoset: 2 }, { hash: 3, name: "Hair 2", geoset: 3 }, { hash: 4, name: "Facial hair 1", geoset: 101 },
@@ -85,6 +108,8 @@ export function createEngine(_options: EngineOptions): ViewerEngine {
       }
       $error.set(null);
       const m = manifestFor(id);
+      $customization.set(null);
+      $look.set(m.look ?? null);
       $manifest.set(m);
       $clips.set(m.clips);
       $parts.set(PARTS);
@@ -115,6 +140,8 @@ export function createEngine(_options: EngineOptions): ViewerEngine {
     setBackgroundColor(css) { $backgroundColor.set(css); },
     centerModel() {},
     toggleShadows() { $shadows.set(!$shadows.get()); },
+    setEffects(on) { $effects.set(on); },
+    setPhysics(on) { $physics.set(on); },
     toggleSkeleton() { $skeleton.set(!$skeleton.get()); },
     toggleAllWireframes() { $wireframe.set(!$wireframe.get()); },
     setAutoRotationSpeed(v) { $autoRotationSpeed.set(v); },
@@ -128,8 +155,19 @@ export function createEngine(_options: EngineOptions): ViewerEngine {
     async setTextureByHash() {},
     setAutomaticMaterialVisibility(on) { $autoVisibility.set(on); },
     setGeoset() {},
+    async loadCustomization() {
+      const m = $manifest.get();
+      if (!m?.customization) return null;
+      const d = stubCustomization(m.id);
+      $customization.set(d);
+      return d;
+    },
+    async setLook(look) { $look.set(look); },
+    prefetchLook() {},
     async equip() {},
     async previewEquip() {},
+    setSheathed() {},
+    async setRider() {},
     focusSlot() {},
     addFigureCell(el) { win.__figures!.add(el); return () => win.__figures!.delete(el); },
     async exportPNG() {},

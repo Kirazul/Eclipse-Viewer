@@ -308,6 +308,11 @@ test.describe("the Viewer tab", () => {
     await page.locator('[data-section="item-options"] button.acc-trigger').click();
     await page.locator("#toggle-shadows").click();
     await expect.poll(async () => (await calls(page, "toggleShadows")).length).toBe(1);
+    // Effects and Physics start on; a click turns each off.
+    await page.locator("#toggle-effects").click();
+    await expect.poll(async () => (await calls(page, "setEffects")).at(-1)?.args[0]).toBe(false);
+    await page.locator("#toggle-physics").click();
+    await expect.poll(async () => (await calls(page, "setPhysics")).at(-1)?.args[0]).toBe(false);
     await page.getByLabel("Auto rotation").fill("1.5");
     await expect.poll(async () => (await calls(page, "setAutoRotationSpeed")).at(-1)?.args[0]).toBe(1.5);
     await page.getByRole("button", { name: "Background colour" }).click();
@@ -347,16 +352,49 @@ test.describe("the Viewer tab", () => {
 });
 
 test.describe("customization", () => {
-  test("steppers drive geosets and land in the URL", async ({ page }) => {
+  test("real named options and swatches drive choices, and the choices land in the URL", async ({ page }) => {
     await mockPacks(page);
     await openRoom(page, "?body=human-male&tab=customization");
     await expect(page.getByTestId("custom-pane")).toBeVisible();
-    await page.getByRole("button", { name: "Next Hair" }).click();
-    await expect.poll(async () => (await calls(page, "setGeoset")).at(-1)?.args).toEqual([0, 2]);
-    await expect(page).toHaveURL(/geo=0\.2/);
-    await expect(page.locator('[data-axis="Hair"] .axis-track')).toHaveText("2 of 3");
+    // Retail's own rows, never a raw geoset stepper.
+    await expect(page.locator(".axis")).toHaveCount(0);
+    const hair = page.locator('[data-option="1"]');
+    await expect(hair.locator(".opt-track-name")).toHaveText("Peasant");
+    await page.getByRole("button", { name: "Next Hair Style" }).click();
+    await expect.poll(async () => (await calls(page, "setLook")).at(-1)?.args).toEqual([{ 1: 11, 2: 20, 3: 30 }]);
+    await expect(hair.locator(".opt-track-name")).toHaveText("Soldier");
+    await expect(page).toHaveURL(/choices=1\.11/);
+    await expect(page).not.toHaveURL(/geo=/);
+    // A two-colour swatch is split, a class-kept one says whose it is.
+    await expect(page.locator('[data-option="2"][data-kind="swatch"] .swatch')).toHaveCount(3);
+    await page.locator('[data-option="2"] [data-choice="21"]').click();
+    await expect.poll(async () => (await calls(page, "setLook")).at(-1)?.args).toEqual([{ 1: 11, 2: 21, 3: 30 }]);
     await page.getByRole("button", { name: "Reset", exact: true }).click();
-    await expect(page.locator('[data-axis="Hair"] .axis-track')).toHaveText("1 of 3");
+    await expect(hair.locator(".opt-track-name")).toHaveText("Peasant");
+    await expect(page).not.toHaveURL(/choices=/);
+    // Retail's tabs, "Mirror" reading Details.
+    await page.getByRole("tab", { name: "Details" }).click();
+    await expect(page.locator('[data-option="3"]')).toBeVisible();
+    await expect(page.locator('[data-option="1"]')).toHaveCount(0);
+  });
+
+  test("Randomize deals only what any player can pick", async ({ page }) => {
+    await mockPacks(page);
+    await openRoom(page, "?body=human-male&tab=customization");
+    await expect(page.locator('[data-option="1"]')).toBeVisible();
+    for (let i = 0; i < 12; i++) await page.getByRole("button", { name: "Randomize" }).click();
+    const dealt = (await calls(page, "setLook")).map((c) => (c.args as [Record<number, number>])[0]);
+    expect(dealt.length).toBe(12);
+    // Choice 22 is kept for one class.
+    expect(dealt.every((l) => l[2] !== 22)).toBe(true);
+  });
+
+  test("an old link's geo= is ignored, and comes off the address", async ({ page }) => {
+    await mockPacks(page);
+    await openRoom(page, "?body=human-male&geo=0.9,32.1&tab=customization");
+    await expect(page.getByTestId("custom-pane")).toBeVisible();
+    expect((await calls(page, "setGeoset")).length).toBe(0);
+    await expect.poll(() => page.url()).not.toMatch(/geo=/);
   });
 });
 

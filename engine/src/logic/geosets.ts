@@ -24,6 +24,12 @@ export class GeosetLook {
     return this.visible.has(id);
   }
 
+  /** A customization choice decided the whole look. */
+  replace(ids: Iterable<number>): void {
+    this.visible.clear();
+    for (const id of ids) this.visible.add(id);
+  }
+
   set(group: number, value: number): void {
     for (const id of this.modelIds) {
       if (groupOf(id) === group && id !== 0) this.visible.delete(id);

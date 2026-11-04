@@ -20,7 +20,13 @@ function loadIndex(): Promise<IndexedRow[]> {
       if (!r.ok) throw new Error(String(r.status));
       return r.json() as Promise<SearchRow[]>;
     })
-    .then(indexRows)
+    .then(async (rows) => {
+      // The items have a file of their own: tens of thousands of rows, wanted only here.
+      const items = await fetch(packUrl(PACK_BASE, "catalog/search-items.json"))
+        .then((r) => (r.ok ? (r.json() as Promise<SearchRow[]>) : []))
+        .catch(() => []);
+      return indexRows([...rows, ...items.map((i) => ({ ...i, c: i.c && !i.c.includes("/") ? `objects/${i.c}.webp` : i.c }))]);
+    })
     .catch((e) => {
       indexPromise = null;
       throw e;
@@ -31,6 +37,7 @@ function loadIndex(): Promise<IndexedRow[]> {
 const hrefOf = (r: SearchRow) => {
   if (r.g === "race") return u(`races/${r.i}/`);
   if (r.g === "item" || r.g === "set") return `${u("wardrobe/")}?try=${encodeURIComponent(r.i)}${r.g === "set" ? "&tab=sets" : ""}`;
+  if (r.g === "mount") return `${u("mounts/view/")}?id=${encodeURIComponent(r.i)}`;
   return wardrobeHref(r.i);
 };
 const KIND: Record<SearchRow["g"], string> = { race: "Race", body: "Body", mount: "Mount", item: "Item", set: "Set" };

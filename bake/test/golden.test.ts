@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelManifest } from "@eclipse/format";
 import { describe, expect, it } from "vitest";
+import { bodyClipWanted } from "../src/bake/clips";
 import { LOCAL_PACKS, WORK } from "../src/lib/env";
 import { M2Model, parseSkin } from "../src/m2/model";
 import { parseDeps } from "../src/m2/chunks";
@@ -157,8 +158,11 @@ describe.skipIf(!baked)("baked Human male", () => {
   });
 
   it("resolved the default look through the tables", () => {
-    expect(manifest.defaultGeosets).toEqual([0, 401, 501, 702, 1301, 1801, 2001, 2201, 3202, 3301, 5101]);
-    expect(manifest.composite?.layers.map((l) => l.layer)).toEqual([0, 3, 8, 9]);
+    // Retail stores no look for a body: Eclipse's first choices, with hair and a beard (chr/tree.ts).
+    expect(manifest.defaultGeosets).toEqual([0, 2, 102, 401, 501, 702, 1301, 1801, 2001, 2201, 3202, 3301, 5101]);
+    expect(manifest.look?.[11]).toBe(45);
+    expect(manifest.look?.[13]).toBe(77);
+    expect(manifest.composite?.layers.length).toBeGreaterThanOrEqual(4);
     expect(manifest.composite?.width).toBe(1024);
     const eyes = manifest.textures.find((t) => t.type === 19);
     expect(eyes?.fileDataId).toBe(3484643);
@@ -180,7 +184,9 @@ describe.skipIf(!baked)("baked Human male", () => {
     expect(by("5.0")?.loops).toBe(true);
     expect(by("1.0")?.loops).toBe(false);
     expect(by("0.0")?.name).toBe("Stand");
-    expect(manifest.defaultClip).toBe("0.0");
+    // Retail's customization screen reads StandCharacterCreate, within 2.4 mm of Stand on this body.
+    expect(manifest.defaultClip).toBe("804.0");
+    expect(by("804.0")?.name).toBe("StandCharacterCreate");
   });
 
   it("skips aliases and writes every clip that isn't one", () => {
@@ -188,8 +194,10 @@ describe.skipIf(!baked)("baked Human male", () => {
     if (!existsSync(raw)) return;
     const deps = parseDeps(readFileSync(raw));
     const model = new M2Model(readFileSync(raw), readFileSync(join(WORK, "raw", golden.build, String(deps.skel[0]))));
-    const wanted = model.sequences.filter((s) => !s.alias);
+    const wanted = model.sequences.filter((s) => !s.alias && bodyClipWanted(s.id));
     expect(manifest.clips.length).toBe(wanted.length);
+    // No clip goes by a number: the nine retail hasn't named are left out with the rest of the internals.
+    expect(manifest.clips.filter((c) => /^Anim /.test(c.name))).toEqual([]);
     expect(new Set(manifest.clips.map((c) => c.id)).size).toBe(manifest.clips.length);
   });
 });

@@ -1,0 +1,21 @@
+---
+import Shell from "../../layouts/Shell.astro";
+---
+<Shell title="Mounts" subtitle="Every mount, in 3D, in every colour the game gives it." nav="mounts">
+  <div class="mount-tools">
+    <div class="search">
+      <input class="field" id="mount-q" type="search" placeholder="Search mounts" aria-label="Search mounts" autocomplete="off" spellcheck="false" maxlength="40" />
+    </div>
+    <div class="browse-row" id="mount-chips">
+      <button class="chip on" type="button" data-cat="all">All</button>
+      <button class="chip" type="button" data-cat="ground">Ground</button>
+      <button class="chip" type="button" data-cat="flying">Flying</button>
+    </div>
+    <span class="count" id="mount-count" aria-label="Results">0</span>
+  </div>
+  <div id="mount-grid"></div>
+</Shell>
+
+<script>
+  import "../../lib/mounts/grid";
+</script>

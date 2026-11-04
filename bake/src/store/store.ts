@@ -33,7 +33,11 @@ export function contentTypeOf(key: string): string {
 
 /** Hashed objects never change. Everything else has a stable name and a new body per bake. */
 export function cacheControlOf(key: string): string {
-  return key.startsWith("objects/") ? "public, max-age=31536000, immutable" : "public, max-age=300";
+  if (key.startsWith("objects/")) return "public, max-age=31536000, immutable";
+  // Every read is counted: only what a bake changes for everybody stays short. A manifest
+  // an hour late still names objects that exist, and the sprites change once in a long while.
+  if (key.startsWith("catalog/") || key.startsWith("reports/")) return "public, max-age=300";
+  return "public, max-age=3600";
 }
 
 const brotli = promisify(brotliCompress);
@@ -77,7 +81,16 @@ export class LocalStore implements Store {
     const p = this.path(key);
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(`${p}.tmp`, body);
-    renameSync(`${p}.tmp`, p);
+    // Windows refuses to replace a file a local server has open. A moment later it is free.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        renameSync(`${p}.tmp`, p);
+        return;
+      } catch (e) {
+        if (attempt >= 8 || (e as { code?: string }).code !== "EPERM") throw e;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
   }
 
   async list(prefix: string): Promise<string[]> {
@@ -155,7 +168,11 @@ export class R2Store implements Store {
   }
 
   async put(key: string, body: Uint8Array): Promise<void> {
-    const wire = await toWire(key, body);
+    await this.putWire(key, await toWire(key, body), body.length);
+  }
+
+  /** `wire` is already what R2 should store: compressing twice would waste a whole bake's CPU. */
+  async putWire(key: string, wire: Uint8Array, rawBytes: number): Promise<void> {
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucket,
@@ -164,7 +181,7 @@ export class R2Store implements Store {
         ContentType: contentTypeOf(key),
         CacheControl: cacheControlOf(key),
         ...(isCompressible(key) ? { ContentEncoding: "br" } : {}),
-        Metadata: { "raw-bytes": String(body.length) },
+        Metadata: { "raw-bytes": String(rawBytes) },
       }),
     );
   }
@@ -175,6 +192,18 @@ export class R2Store implements Store {
     do {
       const r = await this.client.send(new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: token }));
       for (const o of r.Contents ?? []) if (o.Key) out.push(o.Key);
+      token = r.IsTruncated ? r.NextContinuationToken : undefined;
+    } while (token);
+    return out;
+  }
+
+  /** Key -> stored size. One LIST per 1,000 keys. */
+  async listSizes(prefix: string): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    let token: string | undefined;
+    do {
+      const r = await this.client.send(new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: token }));
+      for (const o of r.Contents ?? []) if (o.Key) out.set(o.Key, o.Size ?? 0);
       token = r.IsTruncated ? r.NextContinuationToken : undefined;
     } while (token);
     return out;

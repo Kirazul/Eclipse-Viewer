@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 
 const real = process.env.ECLIPSE_ENGINE === "real";
-const outDir = real ? "dist-real" : "dist-test";
+const outDir = process.env.SITE_OUT ?? (real ? "dist-real" : "dist-test");
 process.env.SITE_DIR = outDir;
 if (!process.env.SKIP_BUILD) {
   const env = { ...process.env, ECLIPSE_ENGINE: real ? "real" : "stub", ECLIPSE_OUT_DIR: outDir, PUBLIC_PACK_BASE: "/Eclipse-Viewer/packs" };

@@ -1,7 +1,8 @@
 import type { SetEntry, SlotId } from "@eclipse/format";
+import { $loaded, clearPickedMounts } from "../share/state";
 import { ALL_SLOTS } from "../slots";
 import { endHover, settled } from "./hover";
-import { $body, $engine, $geosets, $slot, $tab, $worn, type Tab } from "./state";
+import { $body, $engine, $lookText, $slot, $tab, $worn, type Tab } from "./state";
 
 /** Clicking is the whole gesture: no confirm step, nothing locked. */
 export async function wear(slot: SlotId, id: string) {
@@ -27,10 +28,11 @@ export async function wearSet(set: SetEntry) {
 
 export async function resetLook() {
   endHover();
+  $loaded.set(null);
+  clearPickedMounts();
   const engine = $engine.get();
   const worn = Object.keys($worn.get()) as SlotId[];
   $worn.set({});
-  $geosets.set({});
   await Promise.all(worn.map((s) => engine?.equip(s, null)));
   engine?.focusSlot(null);
 }
@@ -45,13 +47,22 @@ export function setSlot(slot: SlotId) {
   $slot.set(slot);
 }
 
-/** The old body stays on screen until the new one is ready; the engine promises that. */
-export async function setBody(id: string) {
-  if (id === $body.get()) return;
+/** Each body keeps the look it last wore here, as Eclipse's picker does. */
+const looks = new Map<string, string>();
+
+/**
+ * The old body stays on screen until the new one is ready; the engine promises that.
+ * `lookText`: the look moves with it, for a posture, whose two bodies offer one tree.
+ */
+export async function setBody(id: string, lookText?: string) {
+  const from = $body.get();
+  if (id === from) return;
+  looks.set(from, $lookText.get());
+  const text = lookText ?? looks.get(id) ?? "";
   $body.set(id);
-  $geosets.set({});
+  $lookText.set(text);
   const engine = $engine.get();
   if (!engine) return;
-  await engine.loadModel(id);
+  await engine.loadModel(id, text || undefined);
   await Promise.all(Object.entries($worn.get()).map(([s, item]) => engine.equip(s as SlotId, item ?? null)));
 }

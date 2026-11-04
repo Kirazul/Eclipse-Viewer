@@ -1,107 +1,263 @@
 /**
- * Customization, after UiCustom.cpp: race portraits and sex on one side, one list of
- * what changes the body on the other. The figure stays where it is, in the room.
- *
- * Shape axes are arrow steppers, colours are swatches (two colours split as
- * Khada's gradient rule). What can be chosen is driven by the model itself: its
- * parts list says which geoset groups have more than one value, and a manifest
- * that carries `customization` adds real named options and colours.
+ * Customization, after Eclipse's UiCustom.cpp: race portraits, form and sex on one side,
+ * retail's own tabs and options on the other. Every row is what retail authors for this
+ * body, in retail's order and names. Nothing else can be reached: a look is option ->
+ * choice, never a geoset number.
  */
 import { useStore } from "@nanostores/react";
-import { $manifest, $parts } from "@eclipse/engine/stores";
+import { $customization, $look, $manifest } from "@eclipse/engine/stores";
+import { classTag, encodeLook, randomLook, type CustomChoice, type CustomOption, type CustomTab, type Look } from "@eclipse/format";
 import { ChevronLeft, ChevronRight, Dices, RotateCcw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { art } from "../../lib/base";
 import { setBody } from "../../lib/room/actions";
-import { $body, $engine, $geosets, $races } from "../../lib/room/state";
+import { $body, $engine, $lookText, $races, $tab, type RoomRace } from "../../lib/room/state";
+import { hideTip, showTip } from "../../lib/tip";
 
-/** Friendly names for retail's geoset groups. Anything else lands under Advanced. */
-const AXES: Record<number, string> = {
-  0: "Hair",
-  1: "Facial hair",
-  2: "Beard",
-  3: "Sideburns",
-  7: "Ears",
-  15: "Cape",
-  17: "Eyeglow",
-  32: "Face",
-};
-const COMMON = new Set([0, 1, 2, 3, 7, 32]);
+/** Worgen and Dracthyr keep a second form on the same portrait, retail's toggle under the race. */
+const FORM_OF: Record<string, string> = { gilnean: "worgen", visage: "dracthyr" };
+const FORMS: Record<string, string> = { worgen: "gilnean", dracthyr: "visage" };
 
-export interface CustomOption {
-  id: string;
-  name: string;
-  /** Two colours are drawn as a diagonal split. */
-  colors?: [string] | [string, string];
-  group?: number;
-  value?: number;
+/** Upright Orc and Mag'har are a choice on the race's own options, never a body of their own here. */
+const isPosture = (b: { id: string }) => /upright-/.test(b.id);
+const sexOf = (id: string): "male" | "female" => (id.endsWith("-female") ? "female" : "male");
+const raceKeyOf = (races: readonly RoomRace[], bodyId: string) => races.find((r) => r.bodies.some((b) => b.id === bodyId));
+
+function hasArt(c: CustomChoice) {
+  return !!(c.mat?.length || c.geo?.length || c.pgeo?.length);
 }
 
-function swatchBackground(colors: CustomOption["colors"]) {
-  if (!colors) return undefined;
-  if (colors.length === 1) return colors[0];
-  return `linear-gradient(to right bottom,${colors[0]} 50%,${colors[1]} 50.3%)`;
+/** "Face (Undead)" reads Face; retail's "Mirror" (the barber's close-up details) reads Details. */
+function tabLabel(name: string) {
+  const n = name.split(" (")[0]!;
+  if (n === "Mirror") return "Details";
+  return n || "Options";
 }
 
-function Stepper(props: { name: string; values: number[]; value: number; onChange: (v: number) => void }) {
-  const i = Math.max(0, props.values.indexOf(props.value));
-  const n = props.values.length;
-  const step = (d: number) => props.onChange(props.values[(i + d + n) % n]!);
+/**
+ * A colour row, as retail shows it: its first real choice is a colour. Retail hides the
+ * swatchless ones in such a row until they are unlocked (a Death Knight's eyes, a special
+ * skin); unlocked here, they stand among the colours as a numbered cell.
+ */
+function isSwatchRow(o: CustomOption) {
+  return !!o.choices.find(hasArt)?.sw?.length;
+}
+
+function swatchBackground(sw?: string[]) {
+  if (!sw?.length) return undefined;
+  if (sw.length === 1) return sw[0];
+  return `linear-gradient(to right bottom,${sw[0]} 50%,${sw[1]} 50.3%)`;
+}
+
+function tipFor(c: CustomChoice, fallback: string) {
+  return { name: c.name || fallback, cls: classTag(c.cls) };
+}
+
+function wear(look: Look, o: CustomOption, c: CustomChoice) {
+  const engine = $engine.get();
+  if (!engine || look[o.id] === c.id) return;
+  void engine.setLook({ ...look, [o.id]: c.id });
+}
+
+function SwatchRow({ o, look, onPick }: { o: CustomOption; look: Look; onPick: (c: CustomChoice) => void }) {
+  const at = o.choices.findIndex((c) => c.id === look[o.id]);
+  const cur = o.choices[Math.max(0, at)]!;
   return (
-    <div className="axis card" data-axis={props.name}>
-      <div className="axis-name">{props.name}</div>
-      <div className="axis-step">
-        <button type="button" className="btn" style={{ width: 28, height: 28, padding: 0 }} onClick={() => step(-1)} aria-label={`Previous ${props.name}`}><ChevronLeft aria-hidden="true" /></button>
-        <div className="axis-track" style={{ "--p": n > 1 ? i / (n - 1) : 1 } as React.CSSProperties}>{i + 1} of {n}</div>
-        <button type="button" className="btn" style={{ width: 28, height: 28, padding: 0 }} onClick={() => step(1)} aria-label={`Next ${props.name}`}><ChevronRight aria-hidden="true" /></button>
+    <div className="opt-row" data-option={o.id} data-kind="swatch">
+      <div className="opt-head">
+        <span className="opt-name">{o.name}</span>
+        <span className="opt-value">{!hasArt(cur) && !cur.sw?.length ? "Off" : cur.name || `${Math.max(0, at) + 1} of ${o.choices.length}`}</span>
+      </div>
+      <div className="swatches sm">
+        {o.choices.map((c, i) => {
+          const off = !c.sw?.length && !hasArt(c);
+          const tip = tipFor(c, off ? "Off" : `${o.name} ${i + 1}`);
+          return (
+            <button
+              key={c.id}
+              type="button"
+              className={`swatch sm${c.id === cur.id ? " on" : ""}${off ? " off" : ""}`}
+              style={{ background: swatchBackground(c.sw) }}
+              aria-label={tip.name}
+              aria-pressed={c.id === cur.id}
+              data-choice={c.id}
+              onPointerEnter={() => {
+                showTip(tip.name, tip.cls || undefined);
+                $engine.get()?.prefetchLook({ ...look, [o.id]: c.id });
+              }}
+              onPointerLeave={hideTip}
+              onClick={() => onPick(c)}
+            >
+              {c.sw?.length || off ? null : i + 1}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function bodyLabel(name: string, race: string) {
-  const short = name.replace(new RegExp(`^${race}\\s*`, "i"), "").trim();
-  return short || name;
+/** Named choices: arrows and a track, every stop a real choice. */
+function StepRow({ o, look, onPick }: { o: CustomOption; look: Look; onPick: (c: CustomChoice) => void }) {
+  const n = o.choices.length;
+  const at = Math.max(0, o.choices.findIndex((c) => c.id === look[o.id]));
+  const cur = o.choices[at]!;
+  const step = (d: number) => o.choices[(at + d + n) % n]!;
+  const warm = (c: CustomChoice) => $engine.get()?.prefetchLook({ ...look, [o.id]: c.id });
+  const single = n <= 1;
+  const label = (c: CustomChoice, i: number) => c.name || `${o.name} ${i + 1}`;
+  const tag = classTag(cur.cls);
+  return (
+    <div className="opt-row" data-option={o.id} data-kind="step">
+      <div className="opt-head">
+        <span className="opt-name">{o.name}</span>
+        {tag ? <span className="opt-value quiet">{tag}</span> : null}
+      </div>
+      <div className="opt-step">
+        <button type="button" className="btn opt-arrow" disabled={single} aria-label={`Previous ${o.name}`} onPointerEnter={() => warm(step(-1))} onClick={() => onPick(step(-1))}>
+          <ChevronLeft aria-hidden="true" />
+        </button>
+        <div
+          className="opt-track"
+          role="slider"
+          aria-label={o.name}
+          aria-valuemin={1}
+          aria-valuemax={n}
+          aria-valuenow={at + 1}
+          aria-valuetext={label(cur, at)}
+          tabIndex={0}
+          data-choice={cur.id}
+          style={{ "--at": (at + 0.5) / n, "--seg": 1 / n } as React.CSSProperties}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") onPick(step(-1));
+            else if (e.key === "ArrowRight") onPick(step(1));
+            else return;
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onPointerMove={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const i = Math.min(n - 1, Math.max(0, Math.floor(((e.clientX - r.left) / r.width) * n)));
+            const c = o.choices[i]!;
+            showTip(label(c, i), classTag(c.cls) || undefined);
+            warm(c);
+          }}
+          onPointerLeave={hideTip}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            onPick(o.choices[Math.min(n - 1, Math.max(0, Math.floor(((e.clientX - r.left) / r.width) * n)))]!);
+          }}
+        >
+          <span className="opt-track-name">{label(cur, at)}</span>
+        </div>
+        <button type="button" className="btn opt-arrow" disabled={single} aria-label={`Next ${o.name}`} onPointerEnter={() => warm(step(1))} onClick={() => onPick(step(1))}>
+          <ChevronRight aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Retail's creator: Alliance left, Horde right, each a column of core races beside a
+ * column of allied races, mirrored so the allied columns meet in the middle. A race both
+ * factions play stands in both. Forms and postures are not portraits.
+ */
+function RaceGrid({ races, currentId, sex, onPick }: { races: readonly RoomRace[]; currentId: string; sex: "male" | "female"; onPick: (r: RoomRace) => void }) {
+  const cols = useMemo(() => {
+    const out: RoomRace[][] = [[], [], [], []];
+    for (const r of races) {
+      if (FORM_OF[r.id] || !r.bodies.some((b) => b.model && !isPosture(b))) continue;
+      const allied = r.group === "Allied";
+      if (r.faction !== "Horde") out[allied ? 1 : 0]!.push(r);
+      if (r.faction !== "Alliance") out[allied ? 2 : 3]!.push(r);
+    }
+    return out;
+  }, [races]);
+  const portrait = (r: RoomRace) => r.bodies.find((b) => b.id === `${r.id}-${sex}`)?.circle || r.circle;
+  return (
+    <div className="race-columns">
+      <div className="race-caption"><span>Alliance</span><span>Horde</span></div>
+      <div className="race-grid4 scroll-none" role="radiogroup" aria-label="Race">
+        {cols.map((list, i) => (
+          <div key={i} className={`race-col${i === 2 ? " gap-left" : ""}`}>
+            {list.map((r) => (
+              <button
+                key={`${r.id}-${i}`}
+                type="button"
+                role="radio"
+                aria-checked={r.id === currentId}
+                className={`race-btn${r.id === currentId ? " on" : ""}`}
+                aria-label={r.name}
+                data-race={r.id}
+                data-tip={r.name}
+                onClick={() => onPick(r)}
+              >
+                <img src={art(portrait(r))} alt="" width={44} height={44} loading="lazy" decoding="async" />
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function CustomPanel() {
   const manifest = useStore($manifest);
-  const parts = useStore($parts);
+  const data = useStore($customization);
+  const look = useStore($look);
   const races = useStore($races);
   const body = useStore($body);
   const engine = useStore($engine);
-  const chosen = useStore($geosets);
-  const [advanced, setAdvanced] = useState(false);
+  const tab = useStore($tab);
+  const [tabId, setTabId] = useState<number | null>(null);
 
-  const currentRace = useMemo(() => races.find((r) => r.bodies.some((b) => b.id === body)) ?? races[0], [races, body]);
-  const axes = useMemo(() => {
-    const groups = new Map<number, Set<number>>();
-    for (const p of parts) {
-      if (p.geoset < 0) continue;
-      const g = Math.floor(p.geoset / 100);
-      const v = p.geoset % 100;
-      if (!groups.has(g)) groups.set(g, new Set());
-      groups.get(g)!.add(v);
+  // Fetched when this tab opens, never on first load: its data is the size of a texture.
+  const wanted = tab === "customization" && !!manifest?.customization;
+  useEffect(() => {
+    if (wanted && engine && (!data || data.id !== manifest?.id)) void engine.loadCustomization();
+  }, [wanted, engine, data, manifest?.id]);
+
+  // The address bar holds the choices, and only those that differ from the first look.
+  useEffect(() => {
+    if (!look || !manifest?.look) return;
+    $lookText.set(encodeLook(look, manifest.look));
+  }, [look, manifest?.look]);
+
+  const current = useMemo(() => {
+    const r = raceKeyOf(races, body) ?? races[0];
+    return r && FORM_OF[r.id] ? (races.find((x) => x.id === FORM_OF[r.id]) ?? r) : r;
+  }, [races, body]);
+  const sex = sexOf(body);
+
+  const tabs: CustomTab[] = data?.tabs ?? [];
+  const activeTab = tabs.find((t) => t.id === tabId)?.id ?? tabs[0]?.id ?? null;
+  const options = useMemo(() => (data?.options ?? []).filter((o) => o.tab === activeTab), [data, activeTab]);
+  useEffect(() => setTabId(null), [manifest?.id]);
+
+  const raceOf = (r: RoomRace, s: "male" | "female") => r.bodies.find((b) => b.id === `${r.id}-${s}` && b.model) ?? r.bodies.find((b) => b.model && !isPosture(b));
+  const pickRace = (r: RoomRace) => {
+    const b = raceOf(r, sex);
+    if (b) void setBody(b.id);
+  };
+  const form = current && FORMS[current.id] ? races.find((r) => r.id === FORMS[current.id]) : undefined;
+  const shownRace = raceKeyOf(races, body);
+
+  const pick = (o: CustomOption, c: CustomChoice) => {
+    if (!look) return;
+    // A posture is a body: the look moves over whole, as both offer the same options.
+    if (c.body && c.body !== body) {
+      void setBody(c.body, encodeLook({ ...look, [o.id]: c.id }, manifest?.look ?? {}));
+      return;
     }
-    return [...groups].filter(([, vs]) => vs.size > 1).map(([g, vs]) => ({ group: g, values: [...vs].sort((a, b) => a - b) }));
-  }, [parts]);
-  const defaults = useMemo(() => {
-    const d: Record<number, number> = {};
-    for (const id of manifest?.defaultGeosets ?? []) d[Math.floor(id / 100)] = id % 100;
-    return d;
-  }, [manifest]);
-  const offers = (manifest as unknown as { customization?: { name: string; options: CustomOption[] }[] } | null)?.customization ?? [];
-
-  const setAxis = (group: number, value: number) => {
-    $geosets.set({ ...$geosets.get(), [group]: value });
-    engine?.setGeoset(group, value);
+    wear(look, o, c);
   };
   const randomize = () => {
-    for (const a of axes) if (COMMON.has(a.group)) setAxis(a.group, a.values[Math.floor(Math.random() * a.values.length)]!);
+    if (data && look) void engine?.setLook(randomLook(data.options, look));
   };
-  const resetBody = () => {
-    for (const a of axes) if (defaults[a.group] !== undefined) engine?.setGeoset(a.group, defaults[a.group]!);
-    $geosets.set({});
+  const reset = () => {
+    if (manifest?.look) void engine?.setLook(manifest.look);
   };
 
   if (!manifest) {
@@ -112,83 +268,66 @@ export function CustomPanel() {
     );
   }
 
-  const common = axes.filter((a) => COMMON.has(a.group));
-  const rest = axes.filter((a) => !COMMON.has(a.group));
-  const named = (a: { group: number }) => AXES[a.group] ?? `Group ${a.group + 1}`;
-  const valueOf = (a: { group: number; values: number[] }) => chosen[a.group] ?? defaults[a.group] ?? a.values[0]!;
-
   return (
     <div className="custom-pane" data-testid="custom-pane">
       <div className="custom-side">
-        <div className="race-grid scroll-none" role="radiogroup" aria-label="Race">
-          {races.map((r) => {
-            const target = r.bodies.find((b) => b.model);
-            return (
-              <button
-                key={r.id}
-                type="button"
-                className={`race-btn${r.id === currentRace?.id ? " on" : ""}${target ? "" : " not-baked"}`}
-                disabled={!target}
-                aria-label={r.name}
-                data-tip={r.name}
-                data-tip-sub={target ? undefined : "Not baked yet"}
-                onClick={() => { if (target) void setBody(target.id); }}
-              >
-                <img src={art(r.circle)} alt="" width={50} height={50} loading="lazy" decoding="async" />
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {currentRace?.bodies.map((b) => (
-            <button
-              key={b.id}
-              type="button"
-              className={`pill${b.id === body ? " on" : ""}`}
-              disabled={!b.model}
-              data-tip={b.model ? undefined : "Not baked yet"}
-              onClick={() => { if (b.model) void setBody(b.id); }}
-            >
-              {bodyLabel(b.name, currentRace.name)}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-1.5">
-          <button type="button" className="btn" style={{ flex: 1 }} disabled={!common.length} onClick={randomize}><Dices aria-hidden="true" />Randomize</button>
-          <button type="button" className="btn" style={{ flex: 1 }} onClick={resetBody}><RotateCcw aria-hidden="true" />Reset</button>
-        </div>
-      </div>
-      <div className="custom-rows scroll-none">
-        {offers.map((o) => (
-          <div key={o.name} className="card" style={{ padding: "8px 10px" }}>
-            <div className="group-label">{o.name}</div>
-            <div className="swatches">
-              {o.options.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  className="swatch"
-                  style={{ background: swatchBackground(opt.colors) }}
-                  aria-label={opt.name}
-                  data-tip={opt.name}
-                  onClick={() => { if (opt.group !== undefined && opt.value !== undefined) setAxis(opt.group, opt.value); }}
-                />
-              ))}
+        <RaceGrid races={races} currentId={current?.id ?? ""} sex={sex} onPick={pickRace} />
+        {form && form.bodies.some((b) => b.model) ? (
+          <div className="custom-group">
+            <div className="group-label">Form</div>
+            <div className="pill-row">
+              {[current!, form].map((r) => {
+                const on = shownRace?.id === r.id;
+                const label = r.name.match(/\((.*)\)/)?.[1] ?? r.name;
+                const target = raceOf(r, sex);
+                return (
+                  <button key={r.id} type="button" className={`pill${on ? " on" : ""}`} disabled={!target} data-form={r.id} onClick={() => { if (target) void setBody(target.id); }}>
+                    {label}
+                  </button>
+                );
+              })}
             </div>
           </div>
-        ))}
-        {common.map((a) => <Stepper key={a.group} name={named(a)} values={a.values} value={valueOf(a)} onChange={(v) => setAxis(a.group, v)} />)}
-        {rest.length > 0 && (
-          <>
-            <button type="button" className="chip" style={{ alignSelf: "flex-start" }} aria-expanded={advanced} onClick={() => setAdvanced((v) => !v)}>Advanced</button>
-            {advanced && rest.map((a) => <Stepper key={a.group} name={named(a)} values={a.values} value={valueOf(a)} onChange={(v) => setAxis(a.group, v)} />)}
-          </>
-        )}
-        {!offers.length && !common.length && !rest.length && (
-          <div className="notice-center">
-            <div className="notice"><div className="notice-title">Nothing to change on this model</div><p className="notice-body">Pick another race to see its options.</p></div>
+        ) : null}
+        <div className="custom-group">
+          <div className="group-label">Gender</div>
+          <div className="pill-row">
+            {(["male", "female"] as const).map((s) => {
+              const r = shownRace ?? current;
+              const target = r?.bodies.find((b) => b.id === `${r.id}-${s}` && b.model);
+              return (
+                <button key={s} type="button" className={`pill${sex === s ? " on" : ""}`} disabled={!target} data-sex={s} onClick={() => { if (target) void setBody(target.id); }}>
+                  {s === "male" ? "Male" : "Female"}
+                </button>
+              );
+            })}
           </div>
-        )}
+        </div>
+      </div>
+      <div className="custom-main">
+        {tabs.length > 1 ? (
+          <div className="pill-row custom-tabs" role="tablist" aria-label="Customization category">
+            {tabs.map((t) => (
+              <button key={t.id} type="button" role="tab" aria-selected={t.id === activeTab} className={`pill${t.id === activeTab ? " on" : ""}`} data-custom-tab={t.id} onClick={() => setTabId(t.id)}>
+                {tabLabel(t.name)}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="custom-rows scroll-none" key={activeTab ?? 0}>
+          {look && data
+            ? options.map((o) => (isSwatchRow(o) ? <SwatchRow key={o.id} o={o} look={look} onPick={(c) => pick(o, c)} /> : <StepRow key={o.id} o={o} look={look} onPick={(c) => pick(o, c)} />))
+            : null}
+          {!manifest.customization ? (
+            <div className="notice-center">
+              <div className="notice"><div className="notice-title">Nothing to change on this model</div><p className="notice-body">Pick a race to see its options.</p></div>
+            </div>
+          ) : null}
+        </div>
+        <div className="custom-foot">
+          <button type="button" className="btn" disabled={!data} onClick={randomize}><Dices aria-hidden="true" />Randomize</button>
+          <button type="button" className="btn" disabled={!data} onClick={reset}><RotateCcw aria-hidden="true" />Reset</button>
+        </div>
       </div>
     </div>
   );

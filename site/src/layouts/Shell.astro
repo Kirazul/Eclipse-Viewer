@@ -1,6 +1,6 @@
 ---
 import "../styles/global.css";
-import { House, Users, Settings, Search, Heart, Sun, Moon, Maximize, Menu, ExternalLink } from "lucide-react";
+import { House, Settings, Search, Heart, Sun, Moon, Maximize, Menu, ExternalLink } from "lucide-react";
 import Glyph from "../components/Glyph.astro";
 import { BASE, LINKS, PACK_BASE, PACK_ORIGIN, u } from "../lib/base";
 
@@ -8,7 +8,7 @@ interface Props {
   title: string;
   subtitle?: string;
   /** Rail entry to light. */
-  nav?: "home" | "wardrobe" | "races" | "mounts" | "settings";
+  nav?: "home" | "wardrobe" | "mounts" | "settings";
   /** Browser tab title, when it differs from the page title. */
   tabTitle?: string;
   description?: string;
@@ -21,7 +21,6 @@ const desc = description ?? "A free 3D viewer for World of Warcraft's races, mou
 const links = [
   { id: "home", label: "Home", href: u(""), icon: "home" },
   { id: "wardrobe", label: "Wardrobe", href: u("wardrobe/"), icon: "hanger" },
-  { id: "races", label: "Races", href: u("races/"), icon: "races" },
   { id: "mounts", label: "Mounts", href: u("mounts/"), icon: "mount" },
   { id: "settings", label: "Settings", href: u("settings/"), icon: "settings" },
 ];
@@ -68,7 +67,6 @@ const swUrl = `${BASE}sw.js?packs=${encodeURIComponent(PACK_BASE)}`;
             <a class:list={["nav-item", { on: nav === l.id }]} href={l.href} data-astro-prefetch aria-current={nav === l.id ? "page" : undefined}>
               {l.icon === "home" && <House aria-hidden="true" />}
               {l.icon === "hanger" && <Glyph name="hanger" />}
-              {l.icon === "races" && <Users aria-hidden="true" />}
               {l.icon === "mount" && <Glyph name="mount" />}
               {l.icon === "settings" && <Settings aria-hidden="true" />}
               {l.label}

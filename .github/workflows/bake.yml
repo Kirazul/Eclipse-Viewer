@@ -8,13 +8,17 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: "What to bake: a model id (human-male), a class (bodies, mounts, items) or all"
+        description: "What to bake: a model id (human-male), a class (bodies, mounts, items), a line (items:midnight, items:warwithin, items:client, items:eclipse), a sample (sample:300) or all"
         default: human-male
       shards:
         description: "Parallel jobs, 1-20"
         default: "4"
       force:
         description: "Re-bake even if the output already exists"
+        type: boolean
+        default: false
+      allow_partial:
+        description: "Start even if the plan says it will not fit the R2 free tier: the budget store stops it at the limit"
         type: boolean
         default: false
 
@@ -45,7 +49,7 @@ jobs:
           key: tact-${{ hashFiles('packages/format/src/config.ts') }}
       - run: pnpm bake catalog --upload
       - id: plan
-        run: pnpm bake plan --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} --github-output "$GITHUB_OUTPUT"
+        run: pnpm bake plan --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} ${{ inputs.allow_partial && '--allow-partial' || '' }} --github-output "$GITHUB_OUTPUT"
 
   bake:
     needs: plan
@@ -80,7 +84,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile --filter @eclipse/bake...
-      - run: pnpm bake report --upload --github-summary "$GITHUB_STEP_SUMMARY"
+      # Folds each shard's ledger into reports/usage.json, then lists only what passed.
+      - run: pnpm bake report --upload --shards "${{ inputs.shards }}" --github-summary "$GITHUB_STEP_SUMMARY"
 
   publish:
     needs: report

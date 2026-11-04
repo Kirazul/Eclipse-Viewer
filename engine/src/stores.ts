@@ -3,7 +3,7 @@
  * calls the methods in api.ts. Nothing in here renders.
  */
 import { atom } from "nanostores";
-import type { ClipEntry, ModelManifest, SlotId } from "@eclipse/format";
+import type { ClipEntry, CustomizationData, Look, ModelManifest, SlotId } from "@eclipse/format";
 
 /** One Model Parts row. */
 export interface PartRow {
@@ -34,6 +34,10 @@ export const $loading = atom<boolean>(false);
 export const $progress = atom<number>(0);
 export const $error = atom<string | null>(null);
 export const $manifest = atom<ModelManifest | null>(null);
+/** The body's customization tree, once the tab or a shared look has asked for it. */
+export const $customization = atom<CustomizationData | null>(null);
+/** What the body on stage wears: option id -> choice id. */
+export const $look = atom<Look | null>(null);
 
 export const $clips = atom<ClipEntry[]>([]);
 /** ClipEntry.id, or "T-Pose". */
@@ -50,6 +54,10 @@ export const $hoveredPart = atom<number | null>(null);
 export const $autoVisibility = atom<boolean>(true);
 
 export const $shadows = atom<boolean>(true);
+/** Particles and ribbons. Off: none simulated, none drawn. */
+export const $effects = atom<boolean>(true);
+/** `.phys` simulation. Off: bones play their animation. */
+export const $physics = atom<boolean>(true);
 export const $watermark = atom<boolean>(true);
 export const $skeleton = atom<boolean>(false);
 export const $wireframe = atom<boolean>(false);

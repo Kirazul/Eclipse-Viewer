@@ -1,11 +1,12 @@
 import type { FxColor, FxData, FxTrack, FxUvAnim } from "@eclipse/format";
+import { readParticles, readRibbons } from "../fx/emitters";
+import { EmitterTracks } from "../fx/tracks";
 import type { M2Model, Sequence } from "../m2/model";
 import { type KeyStats, type Keys, type ValueKind, readKeys, readTrackHeader } from "../m2/sample";
 
 /**
- * FxData at this milestone: the model's own animated tracks, kept as keys because
- * the engine samples them per frame. Particles and ribbons come later and are
- * listed in the manifest's warnings until then.
+ * FxData: the model's own animated tracks, kept as keys because the engine samples
+ * them per frame, and its particle emitters and ribbons (bake/src/fx).
  */
 
 /** Five decimals is far below what a colour or a UV can show, and these digits are this file's size. */
@@ -91,5 +92,13 @@ export async function buildFx(model: M2Model, clips: Sequence[], loadModelBlock:
       }),
     );
   }
-  return { globalLoops: model.gloops, colors, opacity, uvAnims, particles: [], ribbons: [] };
+  const emitters = new EmitterTracks(model, clips, loadModelBlock);
+  return {
+    globalLoops: model.gloops,
+    colors,
+    opacity,
+    uvAnims,
+    particles: await readParticles(model, emitters),
+    ribbons: await readRibbons(model, emitters),
+  };
 }

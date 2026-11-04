@@ -138,6 +138,8 @@ export interface ModelManifest {
   textures: TextureEntry[];
   /** Default-look geosets: visible at load. Every other submesh starts hidden. */
   defaultGeosets: number[];
+  /** `textures` the default look reads. The rest are fetched when a geoset that needs them shows. Absent: all at load. */
+  defaultTextures?: number[];
   /** Layers for the default look of a body. `sections`: rect of each component section, pixels; absent: retail's 2:1 layout. */
   composite?: {
     width: number;
@@ -148,8 +150,28 @@ export interface ModelManifest {
   attachments: Attachment[];
   /** Keys of retail bone indices used as named reference points, e.g. ground. */
   groundBone?: number;
+  /**
+   * The display's ParticleColor, for emitters whose colorIndex is 11..13: start, mid and
+   * end RGB 0..255 in place of the emitter's own colour curve. Absent: none applies.
+   */
+  particleColors?: Record<number, [Vec3, Vec3, Vec3]>;
+  /** Hashed JSON of CustomizationData (./look): fetched when the Customization tab opens or a link names a look. */
+  customization?: { key: string; bytes: number };
+  /** A body's first look, option id -> choice id: what defaultGeosets, composite and textures show. */
+  look?: Record<number, number>;
+  /** The first look's face bones (`.bone`), [bone, 16 numbers column-major, baker's axes]: multiplied onto the posed bone. */
+  boneSet?: [number, number[]][];
+  /** The first look wears skinned parts or a glow: customization is fetched with the model, not when the tab opens. */
+  lookHasParts?: boolean;
   /** A bake never hides a problem: anything skipped is listed. */
   warnings: string[];
+  /**
+   * Retail's name hash of each bone, by retail bone index. A collection shares a body's
+   * skeleton through these: one GLB per file, whichever body wears it.
+   */
+  boneCrcs?: number[];
+  /** A mount: CreatureDisplayInfo.CreatureModelScale x CreatureModelData.ModelScale. A rider is scaled by 1 / this. */
+  displayScale?: number;
 }
 
 /**
@@ -161,6 +183,8 @@ export interface ModelManifest {
 export interface FxTrack {
   globalLoop?: number;
   clips: Record<string, [number[], (number | number[])[]]>;
+  /** Interpolation 0: a value holds until the next key. Absent: linear. */
+  hold?: boolean;
 }
 /** FxData.colors[i]: rgb 0..1, alpha 0..1. */
 export interface FxColor {
@@ -180,8 +204,130 @@ export interface FxData {
   colors: unknown[];
   opacity: unknown[];
   uvAnims: unknown[];
+  /** FxParticle[]. Empty for a model with no emitters. */
   particles: unknown[];
+  /** FxRibbon[]. Empty for a model with no ribbons. */
   ribbons: unknown[];
+}
+
+/** A value almost every emitter holds constant: the plain value, or a track when it moves. */
+export type FxValue = number | number[] | FxTrack;
+
+/**
+ * A curve over one particle's life. `t` runs 0..1. Retail's reading rule applies: with
+ * two values the times are ignored, with three only the middle one counts.
+ */
+export interface FxLifeCurve {
+  t: number[];
+  v: (number | number[])[];
+}
+
+/**
+ * One retail M2Particle. Vectors marked `retail axes` stay in Z-up, because the same
+ * numbers mean world axes for a world-space emitter and the emitter's own for a local
+ * one (flag 0x10). A missing field takes the default in its comment.
+ */
+export interface FxParticle {
+  /** Retail M2Particle flags, unchanged. */
+  flags: number;
+  bone: number;
+  /** The baker's axes, model space, bind pose. */
+  pos: Vec3;
+  /** 1 plane, 2 sphere, 3 spline. */
+  type: number;
+  /** Retail blend 0..7, the batch enum. */
+  blend: number;
+  /** ModelManifest.textures: one, or three for a multi-texture emitter. */
+  tex: number[];
+  /** M2 texture flags per `tex`: 1 wrap S, 2 wrap T. */
+  wrap: number[];
+  /** Flipbook. Default 1. */
+  rows?: number;
+  cols?: number;
+  /** PGD1: active only while this geoset shows. Default 0, always active. */
+  geoset?: number;
+  /** 11..13 take a display's ParticleColor. Default 0. */
+  colorIndex?: number;
+  /** Retail priority plane. Default 0. */
+  priority?: number;
+  speed?: FxValue;
+  speedVar?: FxValue;
+  lat?: FxValue;
+  lon?: FxValue;
+  /** A number g is (0, 0, -g). A vec3 is added to velocity as it stands, retail axes. */
+  gravity?: FxValue;
+  life?: FxValue;
+  lifeVar?: number;
+  rate?: FxValue;
+  rateVar?: number;
+  /** Plane size, sphere radii, spline span. */
+  width?: FxValue;
+  length?: FxValue;
+  zsource?: FxValue;
+  /** Above 0 emits. Default 1. */
+  visible?: FxValue;
+  /** RGB 0..255. */
+  color: FxLifeCurve;
+  /** 0..1, with EXP2 alphaMult already in. */
+  alpha: FxLifeCurve;
+  /** XY half sizes. */
+  scale: FxLifeCurve;
+  /** Flipbook cells. */
+  head?: FxLifeCurve;
+  tail?: FxLifeCurve;
+  /** EXP2 alpha cutoff, 0..1. Absent when it cuts nothing. */
+  cut?: FxLifeCurve;
+  scaleVar?: [number, number];
+  tailLength?: number;
+  /** FPS, on-off fraction, scale min, scale max. Default [10, 1, 1, 1]. */
+  twinkle?: [number, number, number, number];
+  /** Inherited velocity's scale. Default 1. */
+  inherit?: number;
+  drag?: number;
+  /** Initial, initial variation, rate, rate variation, in the client's reading. */
+  spin?: [number, number, number, number];
+  /** x, y, z in retail axes, and the age it stops at. */
+  wind?: [number, number, number, number];
+  /** speed1, scale1, speed2, scale2. */
+  follow?: [number, number, number, number];
+  /** Spline control points, retail axes. */
+  spline?: number[];
+  /** Flag 0x10000000: t0 x t1 x t2. Layers 1 and 2 of `scale`, `p0`, `p1`. */
+  multi?: {
+    mat: number;
+    scale: [number, number];
+    p0: [number, number, number, number];
+    p1: [number, number, number, number];
+    colorMult: number;
+  };
+}
+
+/** One retail M2Ribbon. */
+export interface FxRibbon {
+  bone: number;
+  /** The baker's axes. */
+  pos: Vec3;
+  /** ModelManifest.textures. Three or more: one pass, t0 x t1 x t2. Else one pass per texture. */
+  tex: number[];
+  /** M2 texture flags per `tex`: 1 wrap S, 2 wrap T. */
+  wrap: number[];
+  /** Per pass: retail blend and material flags. */
+  mats: { blend: number; flags: number }[];
+  /** RGB 0..1. */
+  color?: FxValue;
+  alpha?: FxValue;
+  above?: FxValue;
+  below?: FxValue;
+  edgesPerSec: number;
+  lifetime: number;
+  gravity?: number;
+  rows?: number;
+  cols?: number;
+  slot?: FxValue;
+  visible?: FxValue;
+  priority?: number;
+  /** Texture transforms of a three-texture ribbon: per layer scale xy, scroll speed xy. */
+  layers?: { scale: [number, number]; speed: [number, number] }[];
 }
 
 export interface CatalogEntry {
@@ -212,8 +358,49 @@ export interface Catalog {
   races: RaceEntry[];
   mounts: CatalogEntry[];
   items: CatalogEntry[];
-  /** Transmog sets. Absent in a catalogue from before sets were baked. */
+  /** Transmog sets. Absent in a catalogue from before sets were baked. Empty once `setShards` carries them. */
   sets?: SetEntry[];
+  /** The item lines, for the source chips: only rows that passed the bake count. */
+  lines?: LineInfo[];
+  /** Items by line and slot, fetched when browsed: tens of thousands of rows never load at once. */
+  itemShards?: ItemShardRef[];
+  /** Sets by line, fetched when the Sets tab opens. */
+  setShards?: { line: string; key: string; count: number }[];
+  /** Mount families, at `paths.mounts()`, fetched by the Mounts page. `mounts` holds only a few for the home page. */
+  mountCount?: number;
+}
+
+export interface LineInfo {
+  id: string;
+  title: string;
+  items: number;
+  sets: number;
+}
+
+export interface ItemShardRef {
+  line: string;
+  slot: SlotId;
+  key: string;
+  count: number;
+  /** Armour facets present, so a chip shows only what exists. */
+  facets: string[];
+}
+
+/** One shard row: retail display id, name, icon's object hash, facet, in-game entry (0: unknown), and the rare bodies it cannot show on. */
+export type ItemRow = [display: number, name: string, icon: string, facet: string, entry: number, notOn?: string[]];
+
+export interface ItemShard {
+  line: string;
+  slot: SlotId;
+  rows: ItemRow[];
+}
+
+/** Expands a shard row into the entry the browser works with. */
+export function itemOfRow(row: ItemRow, line: string, slot: SlotId): ItemEntry {
+  const [display, name, icon, facet, entry, notOn] = row;
+  const id = `item-${display}`;
+  const key = icon ? `objects/${icon}.webp` : "";
+  return { id, name, circle: key, tile: "", model: paths.item(id), slot, line, icon: key, ...(facet ? { facet } : {}), ...(entry ? { entry } : {}), ...(notOn?.length ? { notOn } : {}) };
 }
 
 export interface SearchRow {
@@ -251,12 +438,42 @@ export interface ItemEntry extends CatalogEntry {
   icon: string;
   /** Armour facet: cloth, leather, mail, plate, or none. */
   facet?: string;
+  /** The item's entry id as the game's wardrobe knows it: what an `ECA1:` code stores. Absent: the DLL has no such row. */
+  entry?: number;
+  /** Bodies no cut and no close donor can draw this on: hidden there, never shown broken. */
+  notOn?: string[];
+}
+
+/** One look of a mount family: a row of the game's MountXDisplay, and nothing else. */
+export interface MountVariant {
+  /** Model id of this display. */
+  id: string;
+  /** Retail CreatureDisplayInfo id. */
+  display: number;
+  name: string;
+  /** Hashed WebP of the mount's spell icon. */
+  icon: string;
+  mountId: number;
+  /** The display id the game's morph takes, when the DLL has this look. */
+  entry?: number;
+}
+
+/** A mount as Eclipse lists it: one row per animal (model file), its colours as variants. */
+export interface MountEntry extends CatalogEntry {
+  mountId: number;
+  /** Mount.MountTypeID says it flies. */
+  flying: boolean;
+  variants: MountVariant[];
 }
 
 export interface SetEntry extends CatalogEntry {
   line: string;
   /** Slot -> ItemEntry.id. Wearing a set replaces the whole look. */
   pieces: Partial<Record<SlotId, string>>;
+  /** Each piece's icon key, so a card and the ring need no item shard loaded. */
+  icons?: Partial<Record<SlotId, string>>;
+  /** Each piece's name, for the ring's tips. */
+  names?: Partial<Record<SlotId, string>>;
 }
 
 /**
@@ -272,16 +489,21 @@ export interface ItemManifest {
    * Models pinned to a body attachment (helm, shoulders, weapons, sheath).
    * `manifest` is a model id. `handFlags`: ItemDisplayInfo.Flags & 0x1D00, the
    * mirror and turn bits of a hand item. `sheath`: its transform on a sheath point,
-   * column-major, in the baker's axes.
+   * column-major, in the baker's axes. `sheathPoints`: where it rests per hand
+   * [main, off], from Item.SheatheType; absent: it is stowed nowhere.
    */
-  attached: { attachment: number; manifest: string; handFlags?: number; sheath?: number[] }[];
+  attached: AttachedPiece[];
   /**
    * When pieces differ per body (helms and shoulders are cut per race and sex): the
    * list for each body id, used in place of `attached`. Absent: `attached` for all.
    */
-  attachedBy?: Record<string, { attachment: number; manifest: string; handFlags?: number; sheath?: number[] }[]>;
-  /** Skinned pieces by body id or race/sex key, falling back as retail does. */
-  collections: Record<string, { manifest: string }>;
+  attachedBy?: Record<string, AttachedPiece[]>;
+  /**
+   * Skinned pieces by body id or race/sex key, falling back as retail does. `donor`: no
+   * cut in the body's retail chain, so this names another body's file. A reference to a
+   * file already baked, never a copy.
+   */
+  collections: Record<string, { manifest: string; donor?: string }>;
   /**
    * Body-texture pieces: section -> texture, drawn in the runtime composite. `sex`
    * present: for that sex only (0 male, 1 female). Absent: both.
@@ -300,6 +522,26 @@ export interface ItemManifest {
   compFlags?: number;
   /** HelmetGeosetData: groups this helm hides, by body id, or "*" for any body. */
   helmetHide?: Record<string, number[]>;
+  /** Used in place of `bodyLayers` by a body whose race retail paints differently. */
+  bodyLayersBy?: Record<string, { section: number; key: string; bytes: number }[]>;
+  /**
+   * The ModelManifests of `attached`, `attachedBy` and `collections`, by id. An item has
+   * dozens per race, and inline they cost one write and one fetch instead of dozens.
+   */
+  models?: Record<string, ModelManifest>;
+  /** For a link that wears this item before any catalogue shard is loaded. */
+  name?: string;
+  icon?: string;
+}
+
+export interface AttachedPiece {
+  attachment: number;
+  manifest: string;
+  handFlags?: number;
+  sheath?: number[];
+  sheathPoints?: [number, number];
+  /** Set when this body's retail chain has no cut: the body this file was cut for. */
+  donor?: string;
 }
 
 /** A set's pieces, fetched at `paths.set(id)`. Same shape as SetEntry.pieces. */
@@ -329,18 +571,33 @@ export interface UiSprite {
   grid?: [number, number];
 }
 
+/** `ui/atlas.json`: where each sprite sits in `ui/atlas.webp`, in pixels of the file. */
+export interface UiAtlas {
+  width: number;
+  height: number;
+  sprites: Record<string, { x: number; y: number; w: number; h: number }>;
+}
+
 export const paths = {
   ui: (sprite: string) => `ui/${sprite}.webp`,
   sprites: () => `ui/sprites.json`,
   item: (id: string) => `items/${id}/manifest.json`,
   set: (id: string) => `sets/${id}/manifest.json`,
   manifest: (id: string) => `models/${id}/manifest.json`,
+  /** The packed UI sprites and their map; scenes stay files of their own. */
+  atlas: () => `ui/atlas.webp`,
+  atlasMap: () => `ui/atlas.json`,
+  itemShard: (line: string, slot: string) => `catalog/items/${line}-${slot}.json`,
+  setShard: (line: string) => `catalog/sets/${line}.json`,
+  mounts: () => `catalog/mounts.json`,
+  usage: () => `reports/usage.json`,
   catalog: () => `catalog/catalog.json`,
   search: () => `catalog/search.json`,
   report: () => `reports/latest.json`,
 };
 
 export * from "./config";
+export * from "./look";
 
 export function packUrl(base: string, key: string): string {
   return `${base.replace(/\/$/, "")}/${key}`;

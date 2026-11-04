@@ -12,6 +12,7 @@ import {
   BackSide,
   Bone,
   Box3,
+  Group,
   BufferAttribute,
   BufferGeometry,
   DirectionalLight,
@@ -46,16 +47,16 @@ import {
   type Texture,
 } from "three";
 import CameraControls from "camera-controls";
-import type { SlotId, Vec3 } from "@eclipse/format";
+import { decodeLook, packUrl, type CustomizationData, type Look, type SlotId, type Vec3 } from "@eclipse/format";
 import type { EngineDebug, EngineOptions, ViewerEngine } from "./api";
-import { CAMERA, CONTROLS, FADE_IN_CSS, GROUND, MODEL_OFFSET, MOTION_SAMPLES, RESIZE_DEBOUNCE_MS, RESIZE_MIN_PX, SCRUB_STEP_S, SHADOW_LIGHT, TIME_SCALES, TPOSE } from "./constants";
+import { BODY_POLAR, CAMERA, CONTROLS, FADE_IN_CSS, GROUND, MODEL_OFFSET, MOTION_SAMPLES, RESIZE_DEBOUNCE_MS, RESIZE_MIN_PX, SCRUB_STEP_S, SHADOW_LIGHT, TIME_SCALES, TPOSE } from "./constants";
 import { FrameStatsRing } from "./logic/frameStats";
 import { boundarySize, depthRange, filterOutlierBoxes, fitShadow, frameStyle, type BoxLike, type ShadowFit } from "./logic/framing";
 import { anisotropyFor, effectiveTier, isSoftwareRenderer, pixelRatioFor } from "./logic/gpuTier";
 import { resolveShortcut } from "./logic/keyboard";
 import { ByteProgress } from "./logic/progress";
 import { slotView } from "./logic/slots";
-import { isAbort, yieldToMain } from "./net/fetchPack";
+import { fetchBytes, isAbort, yieldToMain } from "./net/fetchPack";
 import { ModelAssets, type LoadEnv } from "./model/assets";
 import { ClipDirector } from "./model/director";
 import { Figure, type Part } from "./model/figure";
@@ -63,14 +64,18 @@ import { ktx2Loader, whiteTexture } from "./model/loaders";
 import { CompositeRenderer } from "./wow/composite";
 import { BatchMaterial } from "./wow/material";
 import { Wardrobe, type OutfitChange, type WardrobeHost } from "./wow/wardrobe";
+import { Customizer, type LookHost } from "./wow/customize";
 import type { OutlineRig } from "./render/outline";
 import type { FigureCells } from "./render/cells";
+import { FigureEmitters } from "./render/emitters";
+import { FX_CLOCK } from "./render/particlesSim";
 import {
   $autoRotationSpeed,
   $autoVisibility,
   $backgroundColor,
   $clips,
   $currentClip,
+  $effects,
   $error,
   $focusedSlot,
   $hoveredPart,
@@ -78,6 +83,7 @@ import {
   $manifest,
   $parts,
   $paused,
+  $physics,
   $progress,
   $shadows,
   $skeleton,
@@ -86,6 +92,8 @@ import {
   $wireframe,
   type FrameStats,
   type PartRow,
+  $customization,
+  $look,
 } from "./stores";
 
 CameraControls.install({ THREE: { Vector2, Vector3, Vector4, Quaternion, Matrix4, Spherical, Box3, Sphere, Raycaster } });
@@ -100,6 +108,9 @@ const TIER_CACHE_KEY = "eclipse-gpu-tier";
 
 const _v = new Vector3();
 
+/** AnimationData: Mount, the seat every rider takes unless its mount says otherwise. */
+const RIDER_CLIP = 91;
+
 export class EclipseEngine implements ViewerEngine, EngineDebug {
   readonly opts: Required<Omit<EngineOptions, "packBase">> & { packBase: string } & Required<EngineExtras>;
   canvas: HTMLCanvasElement | null = null;
@@ -110,6 +121,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   figure: Figure | null = null;
   director: ClipDirector | null = null;
   wardrobe: Wardrobe | null = null;
+  customizer: Customizer | null = null;
   composer!: CompositeRenderer;
 
   private light!: DirectionalLight;
@@ -140,6 +152,13 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   private hiddenTab = false;
   private onScreen = true;
   private fxClockMs = 0;
+  /** This tick already updated every world matrix: the render need not do it again. */
+  private worldFresh = false;
+  private physicsOn = $physics.get();
+  /** The scene's shared physics world, once anything uses it. */
+  private physScene: import("./physics/index").PhysScene | null = null;
+  /** The clip time a paused figure last posed its physics for. */
+  private posedAt = -1;
   private fadedIn = false;
   /** Test hook, called after each draw; a compare when unset. */
   onFrame: (() => void) | null = null;
@@ -359,7 +378,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
   // --- Loading ------------------------------------------------------------
 
-  loadModel(modelId: string): Promise<void> {
+  loadModel(modelId: string, lookText?: string): Promise<void> {
     if (this.loadingId === modelId && this.loadPromise) return this.loadPromise;
     if (!this.loadingId && this.figure?.id === modelId) return Promise.resolve();
     this.loadAbort?.abort();
@@ -367,7 +386,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     const seq = ++this.loadSeq;
     this.loadAbort = abort;
     this.loadingId = modelId;
-    const promise = this.runLoad(modelId, abort, seq).finally(() => {
+    const promise = this.runLoad(modelId, abort, seq, lookText).finally(() => {
       if (seq === this.loadSeq) {
         this.loadAbort = null;
         this.loadPromise = null;
@@ -378,7 +397,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     return promise;
   }
 
-  private async runLoad(id: string, abort: AbortController, seq: number): Promise<void> {
+  private async runLoad(id: string, abort: AbortController, seq: number, lookText?: string): Promise<void> {
     const started = performance.now();
     const stale = () => seq !== this.loadSeq;
     $loading.set(true);
@@ -388,6 +407,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     let figure: Figure | null = null;
     let wardrobe: Wardrobe | null = null;
     let director: ClipDirector | null = null;
+    let customizerForLoad: Customizer | null = null;
     try {
       const assets = await ModelAssets.load(id, this.env, {
         signal: abort.signal,
@@ -406,6 +426,16 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
       this.drawBaseComposite(figure);
 
       // The default clip's pose is on before anything can see the figure.
+      // A shared link's look, or skinned parts the first look wears: it joins already dressed.
+      const customizer = new Customizer(figure, this.env, this.lookHost(figure));
+      customizerForLoad = customizer;
+      if (lookText !== undefined || assets.manifest.lookHasParts) {
+        const data = await customizer.load();
+        if (stale()) throw new DOMException("superseded", "AbortError");
+        if (data) await customizer.apply(decodeLook(lookText, data.options, assets.manifest.look ?? {}), false);
+        if (stale()) throw new DOMException("superseded", "AbortError");
+      }
+
       director = new ClipDirector(figure, this.opts.lite, () => this.invalidate());
       director.startDefault(this.opts.animated ? assets.defaultClip : null, $timeScale.get());
       figure.poseNow();
@@ -416,12 +446,22 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
       await this.prepare(figure.root, figure.allTextures());
       if (stale()) throw new DOMException("superseded", "AbortError");
+      await this.prepareEffects(figure, false);
+      if (stale()) throw new DOMException("superseded", "AbortError");
       this.rehearse([figure.root]);
 
       const adopted = figure;
       const adoptedDirector = director;
       const adoptedWardrobe = wardrobe;
-      this.pendingOps.push(() => this.adopt(adopted, adoptedDirector, adoptedWardrobe));
+      const adoptedCustomizer = customizer;
+      this.pendingOps.push(() => {
+        this.adopt(adopted, adoptedDirector, adoptedWardrobe);
+        const old = this.customizer;
+        this.customizer = adoptedCustomizer;
+        $customization.set(adoptedCustomizer.data);
+        $look.set(adoptedCustomizer.look);
+        this.afterDraw.push(() => old?.dispose());
+      });
       await this.nextDrawnFrame();
 
       this.loadMs = performance.now() - started;
@@ -444,6 +484,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     } catch (err) {
       director?.dispose();
       wardrobe?.dispose();
+      customizerForLoad?.dispose();
       if (figure) figure.dispose();
       if (isAbort(err) || stale()) return;
       // The model on screen stays. The UI shows the store's message and a retry.
@@ -464,10 +505,27 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     const c = figure.assets.manifest.composite;
     if (!c) return;
     const layers = figure.assets.layers.flatMap(({ layer, texture }) =>
-      texture ? [{ rect: layer.rect, blend: layer.blend, texture }] : [],
+      texture && layer.targetType === 1 ? [{ rect: layer.rect, blend: layer.blend, texture }] : [],
     );
     figure.baseComposite = this.composer.render(c.width, c.height, layers, this.anisotropy());
     figure.setComposite(figure.baseComposite.texture);
+    // A model texture painted by several layers at once: eyes under an eyesight overlay.
+    for (const type of new Set(figure.assets.layers.map((l) => l.layer.targetType))) {
+      if (type === 1) continue;
+      const of = figure.assets.layers.filter((l) => l.layer.targetType === type && l.texture);
+      const entry = figure.assets.manifest.textures.find((t) => t.type === type);
+      if (!of.length || !entry?.width) continue;
+      const rt = this.composer.render(
+        entry.width,
+        entry.height,
+        of.map((l) => ({ rect: { x: 0, y: 0, w: entry.width, h: entry.height }, blend: l.layer.blend, texture: l.texture! })),
+        this.anisotropy(),
+        true,
+      );
+      figure.ownTarget(rt);
+      figure.setModelTexture(type, rt.texture);
+    }
+    if (figure.assets.manifest.boneSet) figure.setBoneSet(figure.assets.manifest.boneSet);
   }
 
   /** Programs compiled without blocking, textures uploaded: a subtree ready to draw. */
@@ -475,6 +533,46 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     for (const t of textures) this.renderer.initTexture(t);
     await yieldToMain();
     await this.renderer.compileAsync(root, this.camera, this.scene);
+  }
+
+  /**
+   * A figure's particles and ribbons, built off stage with their programs linked, so
+   * they cost the first frame nothing. Lite previews have none, and a model with no
+   * emitters stops at the first compare.
+   */
+  private async prepareEffects(figure: Figure, ownClip: boolean): Promise<void> {
+    if (this.opts.lite || figure.emitters) return;
+    const emitters = FigureEmitters.create(figure);
+    if (!emitters) return;
+    figure.emitters = emitters;
+    emitters.ownClock = ownClip;
+    emitters.setEnabled($effects.get());
+    for (const t of emitters.textures()) this.renderer.initTexture(t);
+    await this.renderer.compileAsync(emitters.root, this.camera, this.scene);
+  }
+
+  /**
+   * A figure's `.phys`, fetched and started after it is on stage: the module and the
+   * file come later than the first frame, and until they land the clip plays as it is.
+   * A model with no physics stops at the first compare.
+   */
+  private async startPhysics(figure: Figure, attached: boolean, node: Object3D): Promise<void> {
+    const entry = figure.assets.manifest.phys;
+    if (!entry || this.opts.lite || figure.rig) return;
+    try {
+      const [{ parsePhys, PhysScene }, { PhysicsRig }, buffer] = await Promise.all([
+        import("./physics/index"),
+        import("./physics/rig"),
+        fetchBytes(packUrl(this.opts.packBase, entry.key), { priority: "low", expected: entry.bytes }),
+      ]);
+      const model = parsePhys(new Uint8Array(buffer));
+      // Worn and taken off again while it was on the wire: nothing to start.
+      if (!model || figure.rig || figure.assets.disposedNow || !node.parent) return;
+      this.physScene ??= new PhysScene();
+      figure.rig = new PhysicsRig(figure, model, this.physScene, attached);
+    } catch (err) {
+      if (!isAbort(err)) console.warn(`[eclipse] physics of ${figure.id} stays off:`, err);
+    }
   }
 
   /**
@@ -554,11 +652,23 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
   /** Runs inside a tick, before the frame is drawn: one step from the old model to the new. */
   private adopt(figure: Figure, director: ClipDirector, wardrobe: Wardrobe): void {
+    this.riderSeq++;
+    this.dropRider();
     const oldFigure = this.figure;
     const oldDirector = this.director;
     const oldWardrobe = this.wardrobe;
-    if (oldFigure) oldFigure.root.removeFromParent();
+    if (oldFigure) {
+      oldFigure.root.removeFromParent();
+      oldFigure.emitters?.root.removeFromParent();
+    }
+    if (oldWardrobe) for (const piece of oldWardrobe.pieces) piece.figure.emitters?.root.removeFromParent();
     this.scene.add(figure.root);
+    if (figure.emitters) this.scene.add(figure.emitters.root);
+    for (const piece of wardrobe.pieces) {
+      if (piece.figure.emitters) this.scene.add(piece.figure.emitters.root);
+      void this.startPhysics(piece.figure, true, piece.node);
+    }
+    void this.startPhysics(figure, false, figure.root);
     this.figure = figure;
     this.director = director;
     this.wardrobe = wardrobe;
@@ -605,6 +715,8 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   private wardrobeHost(figure: Figure): WardrobeHost {
     return {
       prepare: (root, textures) => this.prepare(root, textures),
+      prepareTexture: async (t) => this.renderer.initTexture(t),
+      prepareEffects: (f, ownClip) => this.prepareEffects(f, ownClip),
       anisotropy: () => this.anisotropy(),
       applyAtomically: (change) => {
         // A figure not yet on stage just takes it: it joins the scene already dressed.
@@ -620,10 +732,21 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   }
 
   private applyOutfit(figure: Figure, change: OutfitChange, live: boolean): void {
-    for (const piece of change.detach) piece.node.removeFromParent();
-    for (const piece of change.attach) piece.parent?.add(piece.node);
+    for (const piece of change.detach) {
+      piece.node.removeFromParent();
+      piece.figure.emitters?.root.removeFromParent();
+      // A cached piece must not keep colliding in the shared world from off stage.
+      piece.figure.rig?.dispose();
+      piece.figure.rig = null;
+    }
+    for (const piece of change.attach) {
+      piece.parent?.add(piece.node);
+      if (live && piece.figure.emitters) this.scene.add(piece.figure.emitters.root);
+      if (live) void this.startPhysics(piece.figure, true, piece.node);
+    }
     figure.applyGeosets(change.visible);
     figure.setComposite(change.composite);
+    figure.setWornTextures(change.wornTextures);
     if (live) {
       this.fitToBounds();
       this.publishParts();
@@ -673,6 +796,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     const dt = this.lastTick > 0 ? (now - this.lastTick) / 1000 : 0;
     this.lastTick = now;
 
+    this.worldFresh = false;
     const moved = this.advance(dt);
     const presenting = this.renderer.xr.isPresenting;
     const hovering = this.outline?.active === true;
@@ -714,6 +838,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
         piece.figure.mixer.update(paused ? 0 : dt * (figure?.mixer.timeScale ?? 1));
       }
     }
+    this.rider?.figure.mixer.update(paused ? 0 : dt * (figure?.mixer.timeScale ?? 1));
 
     if (figure) {
       const fxRuns = !paused || director?.currentId === TPOSE;
@@ -734,6 +859,76 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
             }
           }
         }
+        if (this.updateEffects(figure, scaled, clipMs)) changed = true;
+        this.posedAt = -1;
+      } else if (director && figure.rig && director.time() !== this.posedAt) {
+        // Paused and scrubbed: the body moved, so what hangs off it follows at once.
+        this.posedAt = director.time();
+        this.updateEffects(figure, 1 / 60, this.posedAt * 1000);
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Particles and ribbons, which read this frame's bones. Figures with neither stop at
+   * a compare. Those with some need the world matrices now, not at the render, so this
+   * updates them once and the render skips its own pass.
+   */
+  private updateEffects(figure: Figure, dt: number, clipMs: number): boolean {
+    const pieces = this.wardrobe?.pieces;
+    let any = figure.emitters !== null || figure.rig !== null;
+    if (pieces && !any) {
+      for (let i = 0; i < pieces.length; i++) {
+        const f = pieces[i]!.figure;
+        if (f.emitters !== null || f.rig !== null) {
+          any = true;
+          break;
+        }
+      }
+    }
+    if (!any) return false;
+    this.scene.updateMatrixWorld();
+    this.worldFresh = true;
+    FX_CLOCK[0] = clipMs;
+    FX_CLOCK[1] = this.fxClockMs;
+    FX_CLOCK[2] = dt;
+    const clip = this.director?.currentId ?? null;
+    let changed = false;
+
+    // Physics first: particles on a bone it moves read the moved bone.
+    if (this.physicsOn) {
+      let rigs = 0;
+      if (figure.rig) {
+        figure.rig.drive(dt);
+        rigs++;
+      }
+      if (pieces) {
+        for (let i = 0; i < pieces.length; i++) {
+          const rig = pieces[i]!.figure.rig;
+          if (rig) {
+            rig.drive(dt);
+            rigs++;
+          }
+        }
+      }
+      if (rigs > 0) {
+        this.physScene?.step(dt);
+        figure.rig?.write();
+        if (pieces) for (let i = 0; i < pieces.length; i++) pieces[i]!.figure.rig?.write();
+        changed = true;
+      }
+    }
+    if (figure.emitters) {
+      figure.emitters.setClip(clip);
+      if (figure.emitters.update(this.camera)) changed = true;
+    }
+    if (pieces) {
+      for (let i = 0; i < pieces.length; i++) {
+        const e = pieces[i]!.figure.emitters;
+        if (!e) continue;
+        if (!e.ownClock) e.setClip(clip);
+        if (e.update(this.camera)) changed = true;
       }
     }
     return changed;
@@ -741,8 +936,11 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
   private draw(dt: number): void {
     const rig = this.outline;
+    if (this.worldFresh) this.scene.matrixWorldAutoUpdate = false;
     if (rig?.active && this.figure) rig.render(this.figure.parts, dt);
     else this.renderer.render(this.scene, this.camera);
+    this.scene.matrixWorldAutoUpdate = true;
+    this.worldFresh = false;
     this.frameCount++;
     this.onFrame?.();
   }
@@ -853,7 +1051,11 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
     const style = frameStyle(this.opts.cameraStyle, this.opts.interactable, size.z);
     void this.controls.fitToBox(box, transition, style.padding);
-    void this.controls.rotateTo(style.azimuth, style.polar, transition);
+    // A body stands as on retail's customization screen, whose camera has pitch 0
+    // (sub_101D21390 in 12.1.0.69933). Seen from above, as a League champion is, a broad
+    // man's head sinks between his shoulders and he reads as hunched.
+    const polar = figure.assets.manifest.look ? BODY_POLAR : style.polar;
+    void this.controls.rotateTo(style.azimuth, polar, transition);
   }
 
   /** Temp mixers over the clips about to play, bone positions only. */
@@ -971,7 +1173,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     const box = new Box3(new Vector3(...view.min), new Vector3(...view.max));
     const padding = { paddingTop: 0.05, paddingBottom: 0.05, paddingLeft: 0.05, paddingRight: 0.05 };
     void this.controls.fitToBox(box, true, padding);
-    void this.controls.rotateTo(view.azimuth, frameStyle(this.opts.cameraStyle, true, 0).polar, true);
+    void this.controls.rotateTo(view.azimuth, figure.assets.manifest.look ? BODY_POLAR : frameStyle(this.opts.cameraStyle, true, 0).polar, true);
     this.invalidate();
   }
 
@@ -1069,6 +1271,26 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     this.invalidate();
   }
 
+  setEffects(on: boolean): void {
+    $effects.set(on);
+    this.figure?.emitters?.setEnabled(on);
+    for (const piece of this.wardrobe?.pieces ?? []) piece.figure.emitters?.setEnabled(on);
+    this.invalidate();
+  }
+
+  setPhysics(on: boolean): void {
+    $physics.set(on);
+    this.physicsOn = on;
+    const apply = (rig: Figure["rig"]) => {
+      if (!rig) return;
+      if (on) rig.restart();
+      else rig.release();
+    };
+    apply(this.figure?.rig ?? null);
+    for (const piece of this.wardrobe?.pieces ?? []) apply(piece.figure.rig);
+    this.invalidate();
+  }
+
   toggleSkeleton(): void {
     this.showSkeleton(!$skeleton.get());
   }
@@ -1111,8 +1333,9 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     this.setAllParts(false);
   }
 
+  /** "All" means everything this look wears: a part of no look can't be switched on. */
   private setAllParts(visible: boolean): void {
-    for (const part of this.figure?.parts ?? []) part.userVisible = visible;
+    for (const part of this.figure?.parts ?? []) part.userVisible = visible ? null : false;
     this.figure?.refreshVisibility();
     this.publishParts();
     this.invalidate();
@@ -1125,7 +1348,9 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   }
 
   toggleMaterialByHash(hash: number): void {
-    for (const part of this.partsOf(hash)) part.userVisible = !part.mesh.visible;
+    for (const part of this.partsOf(hash)) {
+      if (part.shown) part.userVisible = !part.mesh.visible;
+    }
     this.figure?.refreshVisibility();
     this.publishParts();
     this.invalidate();
@@ -1201,6 +1426,9 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     }
     const rows: PartRow[] = [];
     for (const [hash, parts] of figure.byHash) {
+      // Only what this look wears is listed. Stacking every hair and face at once is
+      // not something the game can assemble.
+      if (!parts.some((p) => p.shown)) continue;
       const first = parts[0]!;
       rows.push({
         hash,
@@ -1233,6 +1461,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
   // --- Customization ------------------------------------------------------
 
+  /** Not for the UI, which can only wear choices: a test's hook into the geoset rules. */
   setGeoset(group: number, value: number): void {
     const figure = this.figure;
     if (!figure) return;
@@ -1240,6 +1469,50 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     figure.applyGeosets(this.wardrobe ? this.wardrobe.currentGeosets() : figure.look.visible);
     this.publishParts();
     this.invalidate();
+  }
+
+  private lookHost(figure: Figure): LookHost {
+    return {
+      composer: this.composer,
+      anisotropy: () => this.anisotropy(),
+      prepare: async (part) => {
+        await this.prepare(part.root, part.allTextures());
+      },
+      applyAtomically: (op) => {
+        this.pendingOps.push(() => {
+          op();
+          this.publishParts();
+          this.invalidate();
+        });
+        return this.nextDrawnFrame();
+      },
+      overOutfit: () => (this.figure === figure ? this.wardrobe?.relook() ?? null : null),
+      changed: (look) => {
+        if (this.figure === figure) $look.set(look);
+      },
+    };
+  }
+
+  async loadCustomization(): Promise<CustomizationData | null> {
+    const c = this.customizer;
+    if (!c) return null;
+    const [data] = await Promise.all([c.load(), this.figure?.assets.allTextures()]);
+    if (this.customizer === c) $customization.set(data);
+    return data;
+  }
+
+  async setLook(look: Look): Promise<void> {
+    const c = this.customizer;
+    if (!c) return;
+    try {
+      await c.apply(look);
+    } catch (err) {
+      if (!isAbort(err)) $error.set(`Could not change the look: ${(err as Error).message}`);
+    }
+  }
+
+  prefetchLook(look: Look): void {
+    void this.customizer?.prefetch(look);
   }
 
   // --- Dressing room ------------------------------------------------------
@@ -1253,6 +1526,80 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
   async previewEquip(slot: SlotId, itemId: string | null): Promise<void> {
     await this.wardrobe?.preview(slot, itemId);
+  }
+
+  setSheathed(sheathed: boolean): void {
+    this.wardrobe?.setStowed(sheathed);
+    this.invalidate();
+  }
+
+  // --- The rider ------------------------------------------------------------
+
+  private rider: { figure: Figure; node: Group } | null = null;
+  private riderSeq = 0;
+
+  private dropRider(): void {
+    const r = this.rider;
+    if (!r) return;
+    this.rider = null;
+    r.node.removeFromParent();
+    this.afterDraw.push(() => r.figure.dispose());
+  }
+
+  /**
+   * Retail seats a rider on the mount's attachment 0 (CreateUnitMount 0x0073D5D0), scaled by
+   * 1 / the display's scale, playing Mount. It joins when everything is ready, in one frame.
+   */
+  async setRider(bodyId: string | null): Promise<void> {
+    const seq = ++this.riderSeq;
+    const mount = this.figure;
+    if (!bodyId || !mount) {
+      this.dropRider();
+      this.invalidate();
+      return;
+    }
+    const seat = mount.assets.manifest.attachments.find((a) => a.id === 0);
+    const bone = seat ? mount.bones.get(`b${seat.bone}`) : undefined;
+    if (!seat || !bone) {
+      this.dropRider();
+      return;
+    }
+    const abort = new AbortController();
+    const assets = await ModelAssets.load(bodyId, this.env, { signal: abort.signal });
+    if (seq !== this.riderSeq || this.figure !== mount) {
+      assets.dispose();
+      return;
+    }
+    const figure = new Figure(assets, { layer: 2, namePrefix: `r${seq}_` });
+    this.drawBaseComposite(figure);
+    const entry = assets.clips.entries.find((c) => c.animId === RIDER_CLIP);
+    if (entry) {
+      const clip = await assets.clips.get(entry.id, "high");
+      figure.mixer.clipAction(figure.adaptClip(clip)).play();
+      figure.mixer.update(0);
+    }
+    if (seq !== this.riderSeq || this.figure !== mount) {
+      figure.dispose();
+      return;
+    }
+    const node = new Group();
+    node.name = "rider";
+    node.matrixAutoUpdate = false;
+    const scale = 1 / (mount.assets.manifest.displayScale ?? 1);
+    node.matrix.makeScale(scale, scale, scale).setPosition(seat.position[0], seat.position[1], seat.position[2]);
+    node.add(figure.root);
+    await this.prepare(node, figure.allTextures());
+    if (seq !== this.riderSeq || this.figure !== mount) {
+      figure.dispose();
+      return;
+    }
+    this.rehearse([node]);
+    this.pendingOps.push(() => {
+      this.dropRider();
+      bone.add(node);
+      this.rider = { figure, node };
+    });
+    await this.nextDrawnFrame();
   }
 
   addFigureCell(el: HTMLElement, opts: { bodyId?: string; itemId?: string; setId?: string }): () => void {
@@ -1469,6 +1816,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
       id: p.figure.id,
       mirrored: p.mirrored,
       attached: p.node.parent !== null,
+      parent: p.node.parent?.name,
       det: p.figure.parts[0]?.mesh.matrixWorld.determinant() ?? 0,
     })) ?? [],
     clipsFetched: () => this.figure?.assets.clips.fetched ?? 0,
@@ -1477,6 +1825,8 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     cells: () => this.cells,
     setTier: (t: number) => this.setTier(t),
     programsInUse: () => new Set(this.figure?.parts.map((p) => p.material.combiner) ?? []).size,
+    effects: () => [this.figure?.emitters?.stats(), ...(this.wardrobe?.pieces ?? []).map((p) => p.figure.emitters?.stats())].filter(Boolean),
+    rigs: () => [this.figure?.rig, ...(this.wardrobe?.pieces ?? []).map((p) => p.figure.rig)].filter((r): r is NonNullable<typeof r> => !!r),
   };
 
   // --- Input --------------------------------------------------------------
@@ -1532,7 +1882,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
       "stopPlaylistChain", "jumpChainTo", "isAnimationPaused", "togglePauseAnimation", "goToNextTimeScale",
       "setAnimationTime", "setAnimationTimePercent", "fullscreen", "toggleWatermark", "mirrorModel",
       "setBackgroundColor", "centerModel", "exportPNG", "exportSTL", "exportGLB", "getAnimationDuration",
-      "toggleShadows", "toggleMaterialByHash", "toggleWireframeByHash", "toggleTransparencyByHash",
+      "toggleShadows", "setEffects", "setPhysics", "toggleMaterialByHash", "toggleWireframeByHash", "toggleTransparencyByHash",
       "toggleDepthWriteByHash", "setOpacityByHash", "setAutomaticMaterialVisibility", "loadModel", "toggleSkeleton",
       "toggleAllWireframes", "setAutoRotationSpeed", "showAllParts", "hideAllParts", "pauseAnimation", "playAnimation",
       "setTextureByHash", "getCurrentAnimationTime", "getFrameStats", "resetFrameStats", "startXR",
@@ -1546,6 +1896,8 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   // --- Teardown -----------------------------------------------------------
 
   dispose(): void {
+    this.rider?.figure.dispose();
+    this.rider = null;
     this.loadAbort?.abort();
     this.loadSeq++;
     clearTimeout(this.resizeTimer);

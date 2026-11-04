@@ -7,7 +7,7 @@
  * a tile's position is arithmetic, nothing ever measures its neighbours, and
  * thousands of entries cost what the visible rows cost.
  */
-import { packUrl, paths, type ItemEntry, type SetEntry, type SlotId } from "@eclipse/format";
+import { itemOfRow, packUrl, paths, type ItemEntry, type ItemManifest, type ItemShard, type ItemShardRef, type LineInfo, type SetEntry, type SlotId } from "@eclipse/format";
 import { art, PACK_BASE } from "../base";
 import { hideTip, showTip } from "../tip";
 import { ARMOR_SLOTS, SLOT_LABEL, emptySprite } from "../slots";
@@ -64,6 +64,63 @@ const saveStars = () => { try { localStorage.setItem(STARS_KEY, JSON.stringify([
 
 let line = "";
 let query = "";
+// The catalogue, by shard: a line's rows for a slot load when somebody opens them.
+let shardRefs: ItemShardRef[] = [];
+let setRefs: { line: string; key: string; count: number }[] = [];
+let lineInfo: LineInfo[] = [];
+const shardRows = new Map<string, ItemEntry[]>();
+const shardsLoading = new Set<string>();
+const setRows = new Map<string, SetEntry[]>();
+let waitingForShard = false;
+const shardMode = () => shardRefs.length > 0 || setRefs.length > 0;
+/** The two hands take anything; the ranged slot keeps its own list (UiMorph.cpp IsHandSlot). */
+const HANDS: SlotId[] = ["mainhand", "offhand", "ranged"];
+const slotsOf = (slot: SlotId): SlotId[] => (slot === "mainhand" || slot === "offhand" ? HANDS : [slot]);
+/** Where a row goes when worn: a hand keeps what it is given. */
+const wornSlot = (item: ItemEntry): SlotId => {
+  const s = $slot.get();
+  return s === "mainhand" || s === "offhand" ? s : item.slot;
+};
+
+async function loadShard(ref: ItemShardRef) {
+  if (shardRows.has(ref.key) || shardsLoading.has(ref.key)) return;
+  shardsLoading.add(ref.key);
+  try {
+    const res = await fetch(packUrl(PACK_BASE, ref.key));
+    if (!res.ok) throw new Error(String(res.status));
+    const shard = await res.json() as ItemShard;
+    const rows = shard.rows.map((r) => itemOfRow(r, shard.line, shard.slot));
+    for (const i of rows) if (!itemsById.has(i.id)) itemsById.set(i.id, i);
+    shardRows.set(ref.key, rows);
+    $items.set(rows);
+    refresh(true);
+  } catch {
+    $catalogState.set("error");
+  } finally {
+    shardsLoading.delete(ref.key);
+  }
+}
+
+async function loadSets(ref: { line: string; key: string }) {
+  if (setRows.has(ref.line) || shardsLoading.has(ref.key)) return;
+  shardsLoading.add(ref.key);
+  try {
+    const res = await fetch(packUrl(PACK_BASE, ref.key));
+    if (!res.ok) throw new Error(String(res.status));
+    const list = await res.json() as SetEntry[];
+    setRows.set(ref.line, list);
+    for (const s of list) {
+      for (const [slot, id] of Object.entries(s.pieces)) {
+        if (id && !pieceInfo.has(id)) pieceInfo.set(id, { name: s.names?.[slot as SlotId] ?? "", icon: s.icons?.[slot as SlotId] ?? "" });
+      }
+    }
+    refresh(true);
+  } catch {
+    $catalogState.set("error");
+  } finally {
+    shardsLoading.delete(ref.key);
+  }
+}
 let favOnly = false;
 const materials = new Set<string>();
 
@@ -84,16 +141,48 @@ function indexItems(items: ItemEntry[]) {
   }
 }
 
+function shardList(slot: SlotId): ItemEntry[] {
+  const out: ItemEntry[] = [];
+  const seen = new Set<string>();
+  for (const s of slotsOf(slot)) {
+    const ref = shardRefs.find((r) => r.line === line && r.slot === s);
+    if (!ref) continue;
+    const rows = shardRows.get(ref.key);
+    if (!rows) {
+      waitingForShard = true;
+      void loadShard(ref);
+      continue;
+    }
+    for (const r of rows) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r);
+    }
+  }
+  return out;
+}
+
 function computeCells(): { cells: Cell[]; count: number } {
   const q = folded(query.trim());
   const match = (e: { name: string; line?: string }) => (!line || e.line === line) && (!q || nameOf(e).includes(q));
+  waitingForShard = false;
   if ($tab.get() === "sets") {
+    if (setRefs.length) {
+      const ref = setRefs.find((r) => r.line === line);
+      if (ref && !setRows.has(line)) {
+        waitingForShard = true;
+        void loadSets(ref);
+      }
+      const sets = (setRows.get(line) ?? []).filter(match);
+      return { cells: sets.map((set) => ({ kind: "set", set })), count: sets.length };
+    }
     const sets = $sets.get().filter(match);
     return { cells: sets.map((set) => ({ kind: "set", set })), count: sets.length };
   }
-  if (!$items.get().length) return { cells: [], count: 0 };
+  if (!shardMode() && !$items.get().length) return { cells: [], count: 0 };
   const slot = $slot.get();
-  let list = (bySlot.get(slot) ?? []).filter(match);
+  const body = $body.get();
+  let list = (shardMode() ? shardList(slot) : bySlot.get(slot) ?? []).filter((i) => match(i) && !i.notOn?.includes(body));
   if (materials.size && ARMOR_SLOTS.has(slot)) list = list.filter((i) => materials.has(i.facet ?? ""));
   if (favOnly) list = list.filter((i) => stars.has(i.id));
   // Star a thing and it sorts to the front. Stable, so the catalogue's order holds otherwise.
@@ -112,7 +201,7 @@ let perRow = 1;
 let rowCount = 0;
 const active = new Map<number, RowEl>();
 const pool: RowEl[] = [];
-let overscan = 3;
+let overscan = 1;
 const iconSet = () => $tab.get() === "sets";
 
 function newTile(): TileEl {
@@ -143,7 +232,7 @@ function setArt(t: TileEl, url: string) {
 
 function isWorn(cell: Cell): boolean {
   const worn = $worn.get();
-  if (cell.kind === "item") return worn[cell.item.slot] === cell.item.id;
+  if (cell.kind === "item") return worn[wornSlot(cell.item)] === cell.item.id;
   if (cell.kind === "hide") return false;
   const pieces = Object.entries(cell.set.pieces);
   return pieces.length > 0 && pieces.every(([s, id]) => worn[s as SlotId] === id);
@@ -197,7 +286,7 @@ function bind(t: TileEl, cell: Cell | undefined) {
 const itemsById = new Map<string, ItemEntry>();
 
 function paintSetIcons(t: TileEl, set: SetEntry) {
-  const icons = Object.values(set.pieces).map((id) => itemsById.get(id ?? "")?.icon).filter(Boolean).slice(0, 9) as string[];
+  const icons = (set.icons ? Object.values(set.icons) : Object.values(set.pieces).map((id) => itemsById.get(id ?? "")?.icon)).filter(Boolean).slice(0, 9) as string[];
   if (!icons.length) {
     t.extra.className = "tile-setglyph";
     t.extra.innerHTML = SET_GLYPH;
@@ -286,7 +375,7 @@ function layout() {
   tileH = figures ? Math.round(FIG_H * scale) : BOARD;
   pad = BOARD_PAD;
   pitch = tileH + pad;
-  overscan = figures ? 0 : 3;
+  overscan = figures ? 0 : 1;
   perRow = Math.max(1, Math.floor((width + pad) / (tileW + pad)));
   rowCount = Math.ceil(cells.length / perRow);
   space.style.setProperty("--tile-w", `${tileW}px`);
@@ -308,7 +397,7 @@ function rebuildAll() {
 function setEmptyState() {
   const state = $catalogState.get();
   const sets = iconSet();
-  const hasCatalogue = sets ? $sets.get().length > 0 : $items.get().length > 0;
+  const hasCatalogue = shardMode() ? lineInfo.length > 0 : sets ? $sets.get().length > 0 : $items.get().length > 0;
   const onlyHide = sets ? cells.length === 0 : cells.length <= 1;
   let title = "";
   let body = "";
@@ -316,7 +405,7 @@ function setEmptyState() {
     emptyBox.hidden = true;
     return;
   }
-  if (state === "loading") {
+  if (state === "loading" || waitingForShard) {
     emptyBox.hidden = true;
     return;
   }
@@ -369,7 +458,7 @@ const tileOf = (e: Event) => (e.target as Element).closest?.(".tile") as TileEl 
 
 function hoverCell(cell: Cell | undefined) {
   if (!cell) return hover(null);
-  if (cell.kind === "item") hover({ key: `i:${cell.item.id}`, pieces: [[cell.item.slot, cell.item.id]], focus: cell.item.slot });
+  if (cell.kind === "item") hover({ key: `i:${cell.item.id}`, pieces: [[wornSlot(cell.item), cell.item.id]], focus: wornSlot(cell.item) });
   else if (cell.kind === "set") {
     const pieces = Object.entries(cell.set.pieces) as [SlotId, string][];
     if (pieces.length) hover({ key: `s:${cell.set.id}`, pieces, focus: null });
@@ -416,7 +505,7 @@ space.addEventListener("click", (e) => {
     void release(cell.slot);
     return;
   }
-  if (cell.kind === "item") void wear(cell.item.slot, cell.item.id);
+  if (cell.kind === "item") void wear(wornSlot(cell.item), cell.item.id);
   else if (Object.keys(cell.set.pieces).length) void wearSet(cell.set);
   t.classList.remove("saved");
   void t.offsetWidth;
@@ -487,6 +576,7 @@ linesEl.addEventListener("click", (e) => {
   if (!pill) return;
   line = pill.dataset.line ?? "";
   for (const b of linesEl.querySelectorAll<HTMLElement>("[data-line]")) b.classList.toggle("on", b === pill);
+  paintChips();
   refresh();
 });
 document.getElementById("room")!.addEventListener("click", (e) => {
@@ -500,6 +590,14 @@ document.getElementById("room")!.addEventListener("click", (e) => {
 });
 
 function paintLines() {
+  if (shardMode()) {
+    const sets = iconSet();
+    const shown = lineInfo.filter((l) => (sets ? l.sets : l.items) > 0);
+    if (!shown.some((l) => l.id === line)) line = shown[0]?.id ?? "";
+    linesEl.innerHTML = shown.map((l) => `<button class="pill sm${line === l.id ? " on" : ""}" type="button" data-line="${l.id}">${l.title} (${(sets ? l.sets : l.items).toLocaleString("en-US")})</button>`).join("");
+    paintChips();
+    return;
+  }
   const counts = new Map<string, number>();
   const list: { line?: string }[] = iconSet() ? $sets.get() : $items.get();
   for (const e of list) if (e.line) counts.set(e.line, (counts.get(e.line) ?? 0) + 1);
@@ -511,9 +609,33 @@ function paintLines() {
   linesEl.innerHTML = pills.join("");
 }
 
+/** The chips can show now, with their room kept: only the chips that exist move, unseen. */
+function revealChips() {
+  const room = document.getElementById("room")!;
+  if (!("chipsWait" in room.dataset)) return;
+  chipsEl.style.minHeight = `${chipsEl.offsetHeight}px`;
+  facetsEl.style.minHeight = `${facetsEl.offsetHeight}px`;
+  paintChips();
+  delete room.dataset.chipsWait;
+}
+
+/** A chip shows only what exists for this line. */
+function paintChips() {
+  if (!shardMode()) return;
+  const has = new Set(shardRefs.filter((r) => r.line === line).map((r) => r.slot));
+  for (const chip of chipsEl.querySelectorAll<HTMLElement>("[data-chip]")) {
+    chip.hidden = !slotsOf(chip.dataset.chip as SlotId).some((s) => has.has(s));
+  }
+  paintFacets();
+}
+
 function paintFacets() {
-  const armor = ARMOR_SLOTS.has($slot.get());
-  for (const c of facetsEl.querySelectorAll<HTMLButtonElement>("[data-armor]")) c.hidden = !armor;
+  const slot = $slot.get();
+  const armor = ARMOR_SLOTS.has(slot);
+  const facets = shardMode() ? new Set(shardRefs.filter((r) => r.line === line && r.slot === slot).flatMap((r) => r.facets)) : null;
+  for (const c of facetsEl.querySelectorAll<HTMLButtonElement>("[data-armor]")) {
+    c.hidden = !armor || (facets !== null && !facets.has(c.dataset.facet ?? ""));
+  }
 }
 
 /** Fetched once per page. Its absence is a clean empty state, not an error on screen. */
@@ -521,19 +643,26 @@ export async function loadCatalog() {
   try {
     const res = await fetch(packUrl(PACK_BASE, paths.catalog()));
     if (res.status === 404) {
+      revealChips();
       $catalogState.set("ready");
       return;
     }
     if (!res.ok) throw new Error(String(res.status));
-    const data = await res.json() as { items?: ItemEntry[]; sets?: SetEntry[]; mounts?: unknown[] };
+    const data = await res.json() as { items?: ItemEntry[]; sets?: SetEntry[]; mounts?: unknown[]; itemShards?: ItemShardRef[]; setShards?: { line: string; key: string; count: number }[]; lines?: LineInfo[] };
+    shardRefs = data.itemShards ?? [];
+    setRefs = data.setShards ?? [];
+    lineInfo = data.lines ?? [];
+    if (shardMode()) line = lineInfo[0]?.id ?? "";
     const items = (data.items ?? []).filter((i) => i.slot);
     for (const i of items) itemsById.set(i.id, i);
     indexItems(items);
     $items.set(items);
     $sets.set(data.sets ?? []);
     $mounts.set((data.mounts ?? []) as never);
+    revealChips();
     $catalogState.set("ready");
   } catch {
+    revealChips();
     $catalogState.set("error");
   }
 }
@@ -542,7 +671,69 @@ export function findItem(id: string): ItemEntry | undefined {
   return itemsById.get(id);
 }
 
+const pieceInfo = new Map<string, { name: string; icon: string }>();
+const asked = new Set<string>();
+
+/**
+ * What the ring needs of a worn item: its name and icon, from a loaded shard or set, else
+ * from the item's own manifest, which the engine is fetching anyway.
+ */
+export function itemInfo(id: string): { name: string; icon: string } | undefined {
+  const known = itemsById.get(id) ?? pieceInfo.get(id);
+  if (known) return known;
+  if (shardMode() && !asked.has(id)) {
+    asked.add(id);
+    void fetch(packUrl(PACK_BASE, paths.item(id)))
+      .then((r) => (r.ok ? (r.json() as Promise<ItemManifest>) : null))
+      .then((m) => {
+        if (!m) return;
+        pieceInfo.set(id, { name: m.name ?? "", icon: m.icon ?? "" });
+        $items.set([...$items.get()]);
+      })
+      .catch(() => undefined);
+  }
+  return undefined;
+}
+
+/** A `?try=` link: an item is worn in its own slot, a set whole. */
+export async function tryLink(id: string): Promise<void> {
+  if (!shardMode()) {
+    const it = findItem(id);
+    if (it) {
+      setSlot(it.slot);
+      void wear(it.slot, it.id);
+      return;
+    }
+    const set = findSet(id);
+    if (set) void wearSet(set);
+    return;
+  }
+  if (id.startsWith("item-")) {
+    const res = await fetch(packUrl(PACK_BASE, paths.item(id)));
+    if (!res.ok) return;
+    const m = await res.json() as ItemManifest;
+    setSlot(m.slot);
+    void wear(m.slot, id);
+    return;
+  }
+  for (const ref of setRefs) {
+    if (!setRows.has(ref.line)) {
+      const res = await fetch(packUrl(PACK_BASE, ref.key));
+      if (res.ok) setRows.set(ref.line, await res.json() as SetEntry[]);
+    }
+    const set = setRows.get(ref.line)?.find((s) => s.id === id);
+    if (set) {
+      void wearSet(set);
+      return;
+    }
+  }
+}
+
 export function findSet(id: string): SetEntry | undefined {
+  for (const list of setRows.values()) {
+    const hit = list.find((s) => s.id === id);
+    if (hit) return hit;
+  }
   return $sets.get().find((s) => s.id === id);
 }
 
@@ -552,13 +743,15 @@ export function startBrowser() {
     materials.clear();
     for (const c of facetsEl.querySelectorAll<HTMLElement>("[data-armor]")) c.classList.remove("on");
     paintFacets();
-    refresh();
+    if (!iconSet() || !shardMode()) refresh();
   });
   $tab.listen(() => {
     paintLines();
     requestAnimationFrame(() => refresh());
   });
   $worn.listen(refreshWorn);
+  // What a body cannot wear is hidden on that body.
+  $body.listen(() => { if (shardMode()) refresh(true); });
   $catalogState.listen(() => {
     paintLines();
     refresh();

@@ -14,12 +14,16 @@ import { $equipped, $error, $previewing } from "../stores";
 import type { Figure } from "../model/figure";
 import type { LoadEnv } from "../model/assets";
 import { CompositeRenderer } from "./composite";
-import { ItemLibrary, disposeItem, planOutfit, type Piece, type ResolvedItem } from "./outfit";
+import { ItemLibrary, disposeItem, itemKey, placePiece, planOutfit, type Piece, type ResolvedItem } from "./outfit";
 
 /** What the engine does for the wardrobe. */
 export interface WardrobeHost {
   /** Compiles programs and uploads textures for a subtree that is not yet on stage. */
   prepare(root: Object3D, textures: Texture[]): Promise<void>;
+  /** The same for a piece's particles and ribbons. `ownClip`: it plays its own clip, not the body's. */
+  prepareEffects(figure: Figure, ownClip: boolean): Promise<void>;
+  /** Uploads a texture the outfit paints on the body, so swapping it in costs nothing. */
+  prepareTexture(texture: Texture): Promise<void>;
   /** Applies a change inside the next frame; resolves when that frame has been drawn. */
   applyAtomically(change: OutfitChange): Promise<void>;
   anisotropy(): number;
@@ -30,6 +34,7 @@ export interface OutfitChange {
   detach: Piece[];
   visible: Set<number>;
   composite: Texture | null;
+  wornTextures: ReadonlyMap<number, Texture>;
 }
 
 const COMPOSITE_CACHE = 4;
@@ -99,7 +104,7 @@ export class Wardrobe {
       .map(([slot, id]) => `${slot}=${id}`)
       .sort()
       .join(",");
-    const wanted = new Set(target.values());
+    const wanted = new Set([...target].map(([slot, id]) => itemKey(id, slot)));
     this.library.cancelUnwanted(wanted);
     if (key === this.appliedKey) return;
 
@@ -107,15 +112,18 @@ export class Wardrobe {
       const worn = new Map<SlotId, ResolvedItem>();
       await Promise.all(
         [...target].map(async ([slot, id]) => {
-          worn.set(slot, await this.library.resolve(id));
+          worn.set(slot, await this.library.resolve(id, slot));
         }),
       );
       if (generation !== this.generation || this.disposed) return;
 
       const plan = planOutfit(this.body, worn);
+      for (const t of plan.wornTextures.values()) await this.host.prepareTexture(t);
       for (const piece of plan.pieces) {
+        if (this.stowed && piece.slot !== "ranged") placePiece(piece, true);
         if (this.onStage.includes(piece)) continue;
         await this.host.prepare(piece.node, piece.figure.allTextures());
+        await this.host.prepareEffects(piece.figure, piece.kind === "attached");
         if (generation !== this.generation || this.disposed) return;
       }
       // Drawn off stage into its own target, so this is safe at any moment.
@@ -127,6 +135,7 @@ export class Wardrobe {
         detach: this.onStage.filter((p) => !next.has(p)),
         visible: plan.visible,
         composite,
+        wornTextures: plan.wornTextures,
       };
       this.onStage = plan.pieces;
       this.appliedKey = key;
@@ -172,6 +181,18 @@ export class Wardrobe {
     return this.onStage;
   }
 
+  /** Weapons drawn or put away: each moves to its sheath point, and what has none stays in hand. */
+  setStowed(stowed: boolean): void {
+    this.stowed = stowed;
+    const handsFull = this.worn.has("mainhand") || this.worn.has("offhand");
+    for (const piece of this.onStage) {
+      if (piece.slot === "ranged") placePiece(piece, handsFull || stowed);
+      else if (piece.slot === "mainhand" || piece.slot === "offhand") placePiece(piece, stowed);
+    }
+  }
+
+  private stowed = false;
+
   /** Slot -> item worn for real, previews left out: what a new body inherits. */
   committedEntries(): [SlotId, string][] {
     return [...this.committed];
@@ -183,6 +204,12 @@ export class Wardrobe {
     for (const [slot, id] of entries) this.committed.set(slot, id);
     this.publish();
     await this.run();
+  }
+
+  /** The look changed under the outfit: what it shows over the new one, worked out now. */
+  relook(): { visible: Set<number>; composite: Texture | null } {
+    const plan = planOutfit(this.body, this.worn);
+    return { visible: plan.visible, composite: this.compositeFor(plan.compositeKey, plan.layers) };
   }
 
   /** The look changed under the outfit: the geosets it shows, recomputed now. */
