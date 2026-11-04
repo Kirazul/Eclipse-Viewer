@@ -41,7 +41,7 @@ const facets = ["Cloth", "Leather", "Mail", "Plate"];
 
 // Every sprite this page may draw, as a CSS variable. They are only used under
 // [data-art], so a page with no packs yet requests none of them.
-const spriteNames = ["slot", "slot-worn", "slot-sel", "card-worn", "setcard-worn", "card-flash", "hidden", ...ALL_SLOTS.map(emptySprite)];
+const spriteNames = ["slot", "slot-worn", "slot-sel", "card-flash", "hidden", ...ALL_SLOTS.map(emptySprite)];
 
 // What Customization needs at once. Small: a few dozen bodies, never the item catalogue.
 const roomData = {
@@ -174,8 +174,6 @@ const roomData = {
             <button class="field-x" id="q-x" type="button" disabled aria-label="Clear search" data-tip="Clear search" data-tip-sub="Escape"><X aria-hidden="true" /></button>
           </div>
           <div class="browse-tools">
-            <button class="pill on" type="button" data-grid-mode="icons">Icons</button>
-            <button class="pill" type="button" data-grid-mode="figures" data-tip="Figures" data-tip-sub="Each item on your character, live.">Figures</button>
             <span class="count" id="count" aria-label="Results">0</span>
           </div>
         </div>
@@ -229,11 +227,6 @@ const roomData = {
       var w = localStorage.getItem("room-width");
       if (w === "collapsed") split.classList.add("collapsed");
       else if (w && innerWidth >= 768 && !room.hasAttribute("data-mount-stage")) split.style.setProperty("--room-w", w + "px");
-      if (localStorage.getItem("grid-mode") === "figures") {
-        room.querySelectorAll("[data-grid-mode]").forEach(function (b) {
-          b.classList.toggle("on", b.getAttribute("data-grid-mode") === "figures");
-        });
-      }
     } catch (e) {}
     var scene = q.get("scene");
     if (scene === "off") document.getElementById("stage").dataset.scene = "off";

@@ -8,30 +8,56 @@
  * That is the rate cap: with many visible, only a budget of cells redraws per frame,
  * round robin, and the budget shrinks if the pass takes too long. The main stage has
  * its own context, so the cost it feels here is main-thread time only.
+ *
+ * A grid is posters, and the one cell the pointer rests on comes alive here. `capture`
+ * is what bakes those posters, through this same code: same pose, same camera, same
+ * materials, so the first live frame and the poster are one picture.
  */
 import {
-  Box3,
   LinearFilter,
+  Matrix4,
   NoToneMapping,
   PerspectiveCamera,
   Scene,
   Vector2,
   Vector3,
   WebGLRenderer,
+  type AnimationAction,
   type Skeleton,
+  type SkinnedMesh,
   type Texture,
-  type WebGLRenderTarget,
+  WebGLRenderTarget,
 } from "three";
-import { packUrl, paths, type ItemManifest, type SetManifest, type SlotId, type Vec3 } from "@eclipse/format";
+import { packUrl, paths, toStraightAlpha, type ItemManifest, type SetManifest, type SlotId } from "@eclipse/format";
 import { CAMERA, CELLS } from "../constants";
 import { FrameStatsRing } from "../logic/frameStats";
-import { WEAPON_SLOTS, slotView } from "../logic/slots";
+import {
+  CELL_FILL,
+  VIEW_ROWS,
+  addToExtents,
+  basisOfAngles,
+  basisOfRows,
+  cellWindow,
+  creatureExtents,
+  emptyExtents,
+  fitExtents,
+  validExtents,
+  weaponView,
+  windowExtents,
+  type Basis,
+  type CellView,
+  type CellWindow,
+  type Extents,
+} from "../logic/cellView";
+import { WEAPON_SLOTS } from "../logic/slots";
 import { fetchJson, isAbort } from "../net/fetchPack";
 import { ModelAssets, registerManifests, type LoadEnv } from "../model/assets";
 import { whiteTexture } from "../model/loaders";
 import { Figure } from "../model/figure";
 import { CompositeRenderer } from "../wow/composite";
-import { ItemLibrary, planOutfit, type Piece, type ResolvedItem } from "../wow/outfit";
+import { ItemLibrary, disposeItem, planOutfit, type Piece, type ResolvedItem } from "../wow/outfit";
+import { FigureEmitters } from "./emitters";
+import { FX_CLOCK } from "./particlesSim";
 
 interface SharedBody {
   figure: Figure;
@@ -44,7 +70,29 @@ interface SharedBody {
   updatedAt: number;
   matricesAt: number;
   uses: number;
+  /** Its default clip, for the clock of what the clip drives. */
+  action: AnimationAction | null;
+  /** Wall time of what runs on global loops. */
+  fxMs: number;
+  /** Sampled vertices of the default look, where the file put them and at the clip's first frame. */
+  rest: Float32Array;
+  posed: Float32Array;
+  /** The standing figure, from `posed`. */
+  minY: number;
+  height: number;
+  /** When it last stopped being drawn: the longest idle goes first. */
+  idleSince: number;
 }
+
+interface BodySlot {
+  promise: Promise<SharedBody>;
+  abort: AbortController;
+  /** Cells waiting on it. When the last one leaves before it lands, the fetch stops. */
+  waiting: number;
+  body: SharedBody | null;
+}
+
+type CellLook = { kind: "alone"; view: CellView } | { kind: "window"; window: CellWindow };
 
 interface Cell {
   el: HTMLElement;
@@ -55,8 +103,21 @@ interface Cell {
   composite: Texture | null;
   wornTextures: ReadonlyMap<number, Texture>;
   pieces: readonly Piece[];
-  /** World box this cell frames. */
-  focus: { min: Vec3; max: Vec3 } | null;
+  /** How it looks at what it holds. Null until prepared. */
+  look: CellLook | null;
+  /** What it fetches on its own account. */
+  abort: AbortController;
+  /** The body it asked for, until it lands. */
+  slot: BodySlot | null;
+  /** What it wears, for whoever trims a cache. */
+  wanted: string[];
+  compositeKey: string;
+  /** Particles and ribbons of what it holds. Only `effects` asks for them. */
+  emitters: FigureEmitters[];
+  warmed: boolean;
+  drawn: boolean;
+  /** The item has nothing to show on this body: a poster of it would be a bare figure. */
+  nothing: boolean;
   onScreen: boolean;
   ready: boolean;
   needsDraw: boolean;
@@ -71,12 +132,33 @@ export interface CellOptions {
   bodyId?: string;
   itemId?: string;
   setId?: string;
+  /** A set's pieces, when a caller has them and no set manifest is published yet. */
+  pieces?: Partial<Record<SlotId, string>>;
+  /** Particles and ribbons run here too: for the one live cell over a poster. */
+  effects?: boolean;
+  /** The first frame this cell drew, in the frame it draws: the poster over it can go now. */
+  onDrawn?: () => void;
+  /** It will not draw: whatever stands in for it stays. */
+  onFailed?: (err: unknown) => void;
+}
+
+export interface Capture {
+  width: number;
+  height: number;
+  /** RGBA, premultiplied as the canvas holds it, top row first. */
+  pixels: Uint8Array;
+  /** An item with nothing to show on this body. */
+  nothing: boolean;
 }
 
 const UNIT_KEYS = ["uT0", "uT1", "uT2"] as const;
-const POLAR = (75 * Math.PI) / 180;
+/** How long an effect runs before its first frame, so a flame is already burning. */
+const WARM_SECONDS = 2;
+const WARM_STEP = 1 / 15;
+/** Enough of a model's vertices to know its silhouette, cheaply on the frame it goes live. */
+const SILHOUETTE_SAMPLES = 6000;
 const _size = new Vector2();
-const _center = new Vector3();
+const _v = new Vector3();
 
 export class FigureCells {
   readonly canvas: HTMLCanvasElement;
@@ -84,7 +166,7 @@ export class FigureCells {
   private readonly env: LoadEnv;
   private readonly composer: CompositeRenderer;
   private readonly cells = new Set<Cell>();
-  private readonly bodies = new Map<string, Promise<SharedBody>>();
+  private readonly bodies = new Map<string, BodySlot>();
   private readonly observer: IntersectionObserver;
   private raf = 0;
   private lastFrame = 0;
@@ -99,6 +181,8 @@ export class FigureCells {
   readonly intervalStats = new FrameStatsRing();
   private readonly passSamples: number[] = [];
   private readonly resizeListener = () => this.fitCanvas();
+  /** Off-screen frames of a poster: what they draw never touches the canvas over the page. */
+  private readonly targets = new Map<string, WebGLRenderTarget>();
 
   constructor(base: string) {
     const canvas = document.createElement("canvas");
@@ -127,7 +211,7 @@ export class FigureCells {
     renderer.autoClear = false;
     renderer.setScissorTest(true);
     this.renderer = renderer;
-    this.env = { base, renderer, anisotropy: () => 4 };
+    this.env = { base, renderer, anisotropy: () => 4, priority: "low" };
     this.composer = new CompositeRenderer(renderer);
 
     this.observer = new IntersectionObserver((entries) => {
@@ -160,7 +244,19 @@ export class FigureCells {
   }
 
   add(el: HTMLElement, opts: CellOptions): () => void {
-    const cell: Cell = {
+    const cell = this.makeCell(el, opts);
+    this.cells.add(cell);
+    this.observer.observe(el);
+    void this.prepareCell(cell).catch((err) => {
+      if (isAbort(err) || cell.removed) return;
+      console.warn("[eclipse] figure cell failed:", err);
+      opts.onFailed?.(err);
+    });
+    return () => this.remove(cell);
+  }
+
+  private makeCell(el: HTMLElement, opts: CellOptions): Cell {
+    return {
       el,
       opts,
       camera: new PerspectiveCamera(CAMERA.fov, 1, 0.1, 100),
@@ -169,7 +265,15 @@ export class FigureCells {
       composite: null,
       wornTextures: new Map(),
       pieces: [],
-      focus: null,
+      look: null,
+      abort: new AbortController(),
+      slot: null,
+      wanted: [],
+      compositeKey: "",
+      emitters: [],
+      warmed: false,
+      drawn: false,
+      nothing: false,
       onScreen: false,
       ready: false,
       needsDraw: false,
@@ -179,12 +283,6 @@ export class FigureCells {
       clip: clippingAncestors(el),
       removed: false,
     };
-    this.cells.add(cell);
-    this.observer.observe(el);
-    void this.prepareCell(cell).catch((err) => {
-      if (!isAbort(err)) console.warn("[eclipse] figure cell failed:", err);
-    });
-    return () => this.remove(cell);
   }
 
   private remove(cell: Cell): void {
@@ -193,22 +291,76 @@ export class FigureCells {
     this.cells.delete(cell);
     this.observer.unobserve(cell.el);
     this.clearCell(cell);
-    if (cell.body) cell.body.uses--;
+    this.leave(cell);
   }
 
-  private bodyFor(id: string): Promise<SharedBody> {
-    let body = this.bodies.get(id);
-    if (!body) {
-      body = this.loadBody(id);
-      this.bodies.set(id, body);
-      body.catch(() => this.bodies.delete(id));
+  /** The cell's claim on what it asked for ends. */
+  private leave(cell: Cell): void {
+    cell.abort.abort();
+    // Still on its way and nobody else wants it: the line is free again.
+    const slot = cell.slot;
+    if (slot) {
+      cell.slot = null;
+      if (--slot.waiting === 0 && !slot.body) {
+        slot.abort.abort();
+        for (const [id, s] of this.bodies) if (s === slot) this.bodies.delete(id);
+      }
     }
-    return body;
+    const body = cell.body;
+    if (body) {
+      for (const e of cell.emitters) e.root.visible = false;
+      if (--body.uses === 0) body.idleSince = performance.now();
+      this.trimAfter(body);
+    }
   }
 
-  private async loadBody(id: string): Promise<SharedBody> {
+  /** What hovering a thousand things leaves behind is bounded: items, composites, whole bodies. */
+  private trimAfter(body: SharedBody): void {
+    const inUse = new Set<string>();
+    const composites = new Set<string>();
+    for (const c of this.cells) {
+      if (c.body !== body) continue;
+      for (const id of c.wanted) inUse.add(id);
+      if (c.compositeKey) composites.add(c.compositeKey);
+    }
+    body.library.cancelUnwanted(inUse);
+    void body.library.trim(inUse, disposeItem);
+    for (const [key, target] of body.composites) {
+      if (body.composites.size <= CELLS.keepComposites) break;
+      if (composites.has(key)) continue;
+      target.dispose();
+      body.composites.delete(key);
+    }
+    const idle = [...this.bodies].filter(([, s]) => s.body && s.body.uses === 0 && s.waiting === 0);
+    idle.sort((a, b) => a[1].body!.idleSince - b[1].body!.idleSince);
+    for (const [id, s] of idle.slice(0, Math.max(0, idle.length - CELLS.keepBodies))) {
+      this.bodies.delete(id);
+      disposeBody(s.body!);
+    }
+  }
+
+  private bodyFor(id: string): BodySlot {
+    let slot = this.bodies.get(id);
+    if (!slot) {
+      const abort = new AbortController();
+      const made: BodySlot = { promise: this.loadBody(id, abort.signal), abort, waiting: 0, body: null };
+      slot = made;
+      this.bodies.set(id, made);
+      made.promise.then(
+        (b) => {
+          made.body = b;
+        },
+        () => {
+          if (this.bodies.get(id) === made) this.bodies.delete(id);
+        },
+      );
+    }
+    return slot;
+  }
+
+  private async loadBody(id: string, signal: AbortSignal): Promise<SharedBody> {
     if (!id) throw new Error("a figure cell needs a bodyId, or a weapon item");
-    const assets = await ModelAssets.load(id, this.env, { signal: new AbortController().signal });
+    const assets = await ModelAssets.load(id, this.env, { signal });
     const figure = new Figure(assets);
     const scene = new Scene();
     scene.matrixWorldAutoUpdate = false;
@@ -217,13 +369,20 @@ export class FigureCells {
     const shared: SharedBody = {
       figure,
       scene,
-      library: new ItemLibrary(this.env, figure, 64),
+      library: new ItemLibrary(this.env, figure, CELLS.keepItems),
       composites: new Map(),
       base: null,
       stamp: 0,
       updatedAt: -1,
       matricesAt: -1,
       uses: 0,
+      action: null,
+      fxMs: 0,
+      rest: new Float32Array(0),
+      posed: new Float32Array(0),
+      minY: 0,
+      height: 0,
+      idleSince: 0,
     };
 
     const c = assets.manifest.composite;
@@ -243,10 +402,11 @@ export class FigureCells {
     const clipId = assets.defaultClip;
     const clip = clipId ? assets.clips.cached(clipId) : undefined;
     if (clip) {
-      figure.mixer.clipAction(clip).play();
+      shared.action = figure.mixer.clipAction(clip).play();
       figure.mixer.update(0);
     }
     figure.poseNow();
+    sampleFigure(shared);
     gateSkeleton(figure.skeleton, shared);
 
     for (const t of figure.allTextures()) this.renderer.initTexture(t);
@@ -255,32 +415,52 @@ export class FigureCells {
   }
 
   private async prepareCell(cell: Cell): Promise<void> {
-    const { itemId, setId } = cell.opts;
+    const { itemId, setId, pieces } = cell.opts;
     const worn = new Map<SlotId, string>();
-    let bodyId = cell.opts.bodyId;
-    let alone: string | null = null;
+    const bodyId = cell.opts.bodyId;
+    let alone: { manifest: string; attachment: number; slot: SlotId } | null = null;
     let focusSlot: SlotId | null = null;
-    const signal = new AbortController().signal;
+    const signal = cell.abort.signal;
 
-    if (setId) {
+    if (pieces) {
+      for (const [slot, id] of Object.entries(pieces)) if (id) worn.set(slot as SlotId, id);
+    } else if (setId) {
       const set = await fetchJson<SetManifest>(packUrl(this.env.base, paths.set(setId)), { signal });
       for (const [slot, id] of Object.entries(set.pieces)) worn.set(slot as SlotId, id);
     } else if (itemId) {
       const item = await fetchJson<ItemManifest>(packUrl(this.env.base, paths.item(itemId)), { signal });
       registerManifests(item.models);
       focusSlot = item.slot;
-      if (WEAPON_SLOTS.includes(item.slot) && item.attached?.[0]) {
+      const first = item.attached?.[0];
+      if (WEAPON_SLOTS.includes(item.slot) && first) {
         // A weapon stands alone in its cell.
-        alone = item.attached[0].manifest;
+        alone = { manifest: first.manifest, attachment: first.attachment, slot: item.slot };
       } else {
         worn.set(item.slot, itemId);
       }
     }
-
-    const body = await this.bodyFor(alone ?? bodyId ?? "");
     if (cell.removed) return;
+
+    const slot = this.bodyFor(alone?.manifest ?? bodyId ?? "");
+    slot.waiting++;
+    cell.slot = slot;
+    const body = await slot.promise;
+    if (cell.removed) {
+      this.trimAfter(body);
+      return;
+    }
+    slot.waiting--;
+    cell.slot = null;
+    // The first cell back on a body starts it again: what it shows now is the poster's frame.
+    if (body.uses === 0 && body.action) {
+      body.action.time = 0;
+      body.figure.mixer.update(0);
+      body.figure.poseNow();
+      body.fxMs = 0;
+    }
     body.uses++;
     cell.body = body;
+    cell.wanted = [...worn.values()];
 
     const resolved = new Map<SlotId, ResolvedItem>();
     await Promise.all(
@@ -291,6 +471,10 @@ export class FigureCells {
     if (cell.removed) return;
 
     const plan = planOutfit(body.figure, resolved);
+    cell.nothing = worn.size > 0 && plan.pieces.length === 0 && !plan.compositeKey && plan.wornTextures.size === 0;
+    for (const part of body.figure.parts) {
+      if (plan.visible.has(part.extras.geoset)) for (const w of part.waiting) body.figure.assets.requestTexture(w.tex);
+    }
     for (const piece of plan.pieces) {
       if (piece.node.parent !== piece.parent) {
         piece.node.visible = false;
@@ -300,23 +484,61 @@ export class FigureCells {
         await this.renderer.compileAsync(piece.node, cell.camera, body.scene);
       }
     }
+    if (cell.removed) return;
     cell.pieces = plan.pieces;
     cell.visibleGeosets = plan.visible;
     cell.composite = this.compositeFor(body, plan);
+    cell.compositeKey = plan.compositeKey;
     cell.wornTextures = plan.wornTextures;
     for (const t of plan.wornTextures.values()) this.renderer.initTexture(t);
 
-    const bounds = body.figure.assets.manifest.bounds;
-    cell.focus = alone || !focusSlot ? bounds : slotView(focusSlot, bounds);
+    const manifest = body.figure.assets.manifest;
+    if (alone) {
+      const b = manifest.bounds;
+      cell.look = { kind: "alone", view: weaponView(alone.slot, alone.attachment, [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]]) };
+    } else if (manifest.kind === "mount") {
+      cell.look = { kind: "alone", view: "creature" };
+    } else {
+      cell.look = { kind: "window", window: cellWindow(focusSlot, body.figure.id.endsWith("-female")) };
+    }
+    if (cell.opts.effects) await this.prepareEffects(cell, plan.pieces);
+    if (cell.removed) return;
     cell.ready = true;
     cell.needsDraw = cell.onScreen;
     this.ensureLoop();
   }
 
+  /** A figure's emitters, off stage with their programs linked, hidden until this cell draws. */
+  private async prepareEffects(cell: Cell, pieces: readonly Piece[]): Promise<void> {
+    const body = cell.body!;
+    for (const figure of [body.figure, ...pieces.map((p) => p.figure)]) {
+      if (!figure.emitters) {
+        const made = FigureEmitters.create(figure);
+        if (!made) continue;
+        figure.emitters = made;
+        made.ownClock = figure !== body.figure;
+        body.scene.add(made.root);
+        for (const list of [figure.assets.fx?.particles, figure.assets.fx?.ribbons] as ({ tex: number[] }[] | undefined)[]) {
+          for (const e of list ?? []) for (const t of e.tex) figure.assets.requestTexture(t);
+        }
+        for (const t of made.textures()) this.renderer.initTexture(t);
+        body.scene.updateMatrixWorld(true);
+        await this.renderer.compileAsync(made.root, cell.camera, body.scene);
+        made.root.visible = false;
+        if (cell.removed) return;
+      }
+      cell.emitters.push(figure.emitters);
+    }
+  }
+
   private compositeFor(body: SharedBody, plan: ReturnType<typeof planOutfit>): Texture | null {
     if (!plan.compositeKey) return body.base;
     let target = body.composites.get(plan.compositeKey);
-    if (!target) {
+    if (target) {
+      // Most recently used goes last.
+      body.composites.delete(plan.compositeKey);
+      body.composites.set(plan.compositeKey, target);
+    } else {
       const c = body.figure.assets.manifest.composite!;
       const w = Math.max(1, c.width >> (CELLS.compositeDivisor - 1));
       const h = Math.max(1, c.height >> (CELLS.compositeDivisor - 1));
@@ -377,11 +599,14 @@ export class FigureCells {
         body.updatedAt = this.stamp;
         body.stamp = this.stamp;
         body.figure.mixer.update(dt);
+        body.fxMs += dt * 1000;
+        if (body.figure.fx.animated) body.figure.fx.update(clipMsOf(body), body.fxMs);
       }
       for (const piece of c.pieces) {
         if (piece.figure.poseStamp !== this.stamp) {
           piece.figure.poseStamp = this.stamp;
           piece.figure.mixer.update(dt);
+          if (piece.figure.fx.animated) piece.figure.fx.update(clipMsOf(body), body.fxMs);
         }
       }
     }
@@ -395,12 +620,18 @@ export class FigureCells {
 
     for (const c of shown) {
       const rect = c.el.getBoundingClientRect();
+      // A scroller inside the page moved it: what it left behind has to go.
+      if (c.rect && (rect.left !== c.rect.left || rect.top !== c.rect.top)) moved = true;
       c.rect = rect;
       if (rect.width !== c.width || rect.height !== c.height) {
         c.width = rect.width;
         c.height = rect.height;
         frameCell(c, rect.width, rect.height);
         moved = true;
+      }
+      if (c.emitters.length) {
+        if (!c.warmed) warmEffects(c);
+        else runEffects(c, dt);
       }
     }
     if (moved) {
@@ -452,11 +683,24 @@ export class FigureCells {
     r.setViewport(x, y, rect.width, rect.height);
     r.setScissor(clipped.x, clipped.y, clipped.w, clipped.h);
     r.clear(true, true, false);
+    this.drawContents(cell, body);
+    if (!cell.drawn) {
+      cell.drawn = true;
+      cell.opts.onDrawn?.();
+    }
+  }
 
+  private drawContents(cell: Cell, body: SharedBody): void {
     const figure = body.figure;
     for (const part of figure.parts) {
-      part.mesh.visible = part.ready && (cell.visibleGeosets?.has(part.extras.geoset) ?? part.shown);
-      for (const w of part.worn) part.material.uniforms[UNIT_KEYS[w.unit]!].value = cell.wornTextures.get(w.type) ?? whiteTexture();
+      let painted = true;
+      for (const w of part.worn) {
+        const texture = cell.wornTextures.get(w.type) ?? figure.lookTexture(w.type);
+        part.material.uniforms[UNIT_KEYS[w.unit]!].value = texture ?? whiteTexture();
+        // A slot nothing paints isn't drawn: on the stage too (Figure.blank).
+        if (!texture) painted = false;
+      }
+      part.mesh.visible = painted && part.ready && (cell.visibleGeosets?.has(part.extras.geoset) ?? part.shown);
       if (part.usesComposite.length) {
         part.usesComposite.forEach((used, i) => {
           if (used) part.material.uniforms[UNIT_KEYS[i]!].value = cell.composite;
@@ -464,16 +708,89 @@ export class FigureCells {
       }
     }
     for (const piece of cell.pieces) piece.node.visible = true;
-    r.render(body.scene, cell.camera);
+    for (const e of cell.emitters) e.root.visible = true;
+    this.renderer.render(body.scene, cell.camera);
     for (const piece of cell.pieces) piece.node.visible = false;
+    for (const e of cell.emitters) e.root.visible = false;
   }
 
   private clearCell(cell: Cell): void {
     if (!cell.onScreen) return;
-    const rect = cell.el.getBoundingClientRect();
     const h = this.renderer.getSize(_size).y;
-    this.renderer.setScissor(rect.left, h - rect.bottom, rect.width, rect.height);
-    this.renderer.clear(true, true, false);
+    // Where it last drew and where it stands now: a scroller may have moved it since.
+    for (const rect of cell.rect ? [cell.rect, cell.el.getBoundingClientRect()] : [cell.el.getBoundingClientRect()]) {
+      this.renderer.setScissor(Math.floor(rect.left) - 1, Math.floor(h - rect.bottom) - 1, Math.ceil(rect.width) + 2, Math.ceil(rect.height) + 2);
+      this.renderer.clear(true, true, false);
+    }
+  }
+
+  // --- A poster -----------------------------------------------------------
+
+  /**
+   * One frame of a cell, read back: what the baker makes a poster of. Rendered at
+   * `supersample` times the size, for the baker to bring down, into a frame of its own, so
+   * a page can do this under a live canvas. Its effects run first, so a flame is already
+   * burning, and everything the look needs is in before it draws.
+   */
+  async capture(opts: CellOptions, width: number, height: number, supersample = 2): Promise<Capture> {
+    const cell = this.makeCell(document.createElement("div"), { ...opts, effects: opts.effects ?? true });
+    // One of the cells, never on screen: what it is fetching counts as wanted by whoever trims.
+    this.cells.add(cell);
+    try {
+      await this.prepareCell(cell);
+      const body = cell.body;
+      if (!body || cell.removed) throw new DOMException("gone", "AbortError");
+      await waitForTextures([body.figure, ...cell.pieces.map((p) => p.figure)], cell.visibleGeosets);
+      const w = width * supersample;
+      const h = height * supersample;
+      const r = this.renderer;
+      const target = this.targetOf(w, h);
+      // The first frame of the clip, whatever a live cell on this body is showing now.
+      const resume = body.action?.time ?? 0;
+      if (body.action) body.action.time = 0;
+      body.figure.mixer.update(0);
+      body.stamp = ++this.stamp;
+      body.figure.poseNow();
+      cell.width = width;
+      cell.height = height;
+      frameCell(cell, width, height);
+      body.scene.updateMatrixWorld(true);
+      if (cell.emitters.length) warmEffects(cell);
+      r.setRenderTarget(target);
+      r.clear(true, true, false);
+      this.drawContents(cell, body);
+      const raw = new Uint8Array(w * h * 4);
+      r.readRenderTargetPixels(target, 0, 0, w, h, raw);
+      r.setRenderTarget(null);
+      if (body.action) body.action.time = resume;
+      const pixels = new Uint8Array(raw.length);
+      for (let y = 0; y < h; y++) pixels.set(raw.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+      return { width: w, height: h, pixels, nothing: cell.nothing };
+    } finally {
+      cell.removed = true;
+      this.cells.delete(cell);
+      this.leave(cell);
+    }
+  }
+
+  private targetOf(w: number, h: number): WebGLRenderTarget {
+    const key = `${w}x${h}`;
+    let target = this.targets.get(key);
+    if (!target) {
+      target = new WebGLRenderTarget(w, h, { samples: 4, depthBuffer: true });
+      this.targets.set(key, target);
+    }
+    return target;
+  }
+
+  /** The same picture as a baked poster, for a card the bake hasn't reached. */
+  async posterUrl(opts: CellOptions, width: number, height: number): Promise<string | null> {
+    const cap = await this.capture(opts, width, height, 2);
+    if (cap.nothing) return null;
+    const { rgba } = toStraightAlpha(cap.pixels, cap.width, cap.height);
+    const canvas = new OffscreenCanvas(cap.width, cap.height);
+    canvas.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer as ArrayBuffer), cap.width, cap.height), 0, 0);
+    return URL.createObjectURL(await canvas.convertToBlob({ type: "image/webp", quality: 0.86 }));
   }
 
   // --- Numbers ------------------------------------------------------------
@@ -490,6 +807,7 @@ export class FigureCells {
     programs: number;
     bodies: number;
     cellFps: number;
+    looping: boolean;
   } {
     const sorted = [...this.passSamples].sort((a, b) => a - b);
     const at = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))] ?? 0;
@@ -509,6 +827,7 @@ export class FigureCells {
       programs: info.programs?.length ?? 0,
       bodies: this.bodies.size,
       cellFps: interval?.fps ?? 0,
+      looping: this.raf !== 0,
     };
   }
 
@@ -523,14 +842,13 @@ export class FigureCells {
     window.removeEventListener("resize", this.resizeListener);
     this.observer.disconnect();
     this.cells.clear();
-    for (const body of this.bodies.values()) {
-      void body.then((b) => {
-        b.library.disposeAll();
-        for (const rt of b.composites.values()) rt.dispose();
-        b.figure.dispose();
-      });
+    for (const slot of this.bodies.values()) {
+      slot.abort.abort();
+      void slot.promise.then(disposeBody, () => undefined);
     }
     this.bodies.clear();
+    for (const t of this.targets.values()) t.dispose();
+    this.targets.clear();
     this.composer.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
@@ -538,8 +856,107 @@ export class FigureCells {
   }
 }
 
+function disposeBody(b: SharedBody): void {
+  b.library.disposeAll();
+  for (const rt of b.composites.values()) rt.dispose();
+  b.composites.clear();
+  b.figure.dispose();
+}
+
 function scaled(rect: { x: number; y: number; w: number; h: number }, k: number) {
   return { x: rect.x * k, y: rect.y * k, w: rect.w * k, h: rect.h * k };
+}
+
+function clipMsOf(b: SharedBody): number {
+  return (b.action?.time ?? 0) * 1000;
+}
+
+/**
+ * The default look's silhouette, measured once at the clip's first frame. Hidden geosets
+ * hang on bones nothing animates and are not part of it; a manifest's bounds are, and
+ * they hold the bind pose's arms besides, so they frame the wrong thing.
+ */
+function sampleFigure(b: SharedBody): void {
+  // A glow is not the model's shape: a storm orb far above a gryphon would shrink the gryphon.
+  const shown = b.figure.parts.filter((p) => p.shown);
+  const solid = shown.filter((p) => !p.material.state.blended);
+  const parts = solid.length ? solid : shown;
+  // A model's parts share one vertex buffer: only what a part's own triangles use is that part.
+  const countOf = (p: (typeof parts)[number]) => p.mesh.geometry.index?.count ?? p.mesh.geometry.getAttribute("position")?.count ?? 0;
+  let total = 0;
+  for (const p of parts) total += countOf(p);
+  const stride = Math.max(1, Math.ceil(total / SILHOUETTE_SAMPLES));
+  const rest: number[] = [];
+  const posed: number[] = [];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const p of parts) {
+    const mesh = p.mesh as SkinnedMesh;
+    const position = mesh.geometry.getAttribute("position");
+    if (!position) continue;
+    const index = mesh.geometry.index;
+    const count = countOf(p);
+    for (let k = 0; k < count; k += stride) {
+      const i = index ? index.getX(k) : k;
+      _v.fromBufferAttribute(position as never, i).applyMatrix4(mesh.matrixWorld);
+      rest.push(_v.x, _v.y, _v.z);
+      mesh.getVertexPosition(i, _v).applyMatrix4(mesh.matrixWorld);
+      posed.push(_v.x, _v.y, _v.z);
+      if (_v.y < lo) lo = _v.y;
+      if (_v.y > hi) hi = _v.y;
+    }
+  }
+  b.rest = Float32Array.from(rest);
+  b.posed = Float32Array.from(posed);
+  b.minY = Number.isFinite(lo) ? lo : 0;
+  b.height = Number.isFinite(lo) ? hi - lo : 0;
+}
+
+/** Everything the frame needs is on the GPU: a poster never shows a part still on its way. */
+async function waitForTextures(figures: readonly Figure[], visible: ReadonlySet<number> | null, timeoutMs = 20_000): Promise<void> {
+  const until = performance.now() + timeoutMs;
+  for (;;) {
+    let pending = false;
+    for (const f of figures) {
+      for (const part of f.parts) {
+        const shows = f === figures[0] ? (visible?.has(part.extras.geoset) ?? part.shown) : part.shown;
+        if (shows && part.waiting.length) pending = true;
+      }
+      if (f.emitters && !effectTexturesIn(f)) pending = true;
+    }
+    if (!pending || performance.now() > until) return;
+    await new Promise((r) => setTimeout(r, 30));
+  }
+}
+
+/** A flame with no texture yet would simply not be in the picture. */
+function effectTexturesIn(f: Figure): boolean {
+  const { fx, manifest, textures } = f.assets;
+  const emitters = [...(fx?.particles ?? []), ...(fx?.ribbons ?? [])] as { tex: number[] }[];
+  return emitters.every((e) => e.tex.every((t) => !manifest.textures[t]?.key || textures[t]));
+}
+
+function setEffectClock(body: SharedBody, dt: number): void {
+  FX_CLOCK[0] = clipMsOf(body);
+  FX_CLOCK[1] = body.fxMs;
+  FX_CLOCK[2] = dt;
+}
+
+function runEffects(cell: Cell, dt: number): void {
+  setEffectClock(cell.body!, dt);
+  for (const e of cell.emitters) e.update(cell.camera);
+}
+
+/** A few big steps with the figure at its first frame: the same picture as the poster, burning. */
+function warmEffects(cell: Cell): void {
+  cell.warmed = true;
+  const body = cell.body!;
+  const steps = Math.round(WARM_SECONDS / WARM_STEP);
+  setEffectClock(body, WARM_STEP);
+  for (let i = 0; i < steps; i++) {
+    FX_CLOCK[1] = body.fxMs + i * WARM_STEP * 1000;
+    for (const e of cell.emitters) e.update(cell.camera);
+  }
 }
 
 /** The skeleton uploads its bone texture once per frame, not once per cell. */
@@ -554,23 +971,55 @@ function gateSkeleton(skeleton: Skeleton | null, body: SharedBody): void {
   };
 }
 
+const _m = new Matrix4();
+const _axisX = new Vector3();
+const _axisY = new Vector3();
+const _axisZ = new Vector3();
+
 function frameCell(cell: Cell, width: number, height: number): void {
-  const focus = cell.focus;
-  if (!focus || height <= 0) return;
+  const body = cell.body;
+  const look = cell.look;
+  if (!body || !look || height <= 0 || body.height <= 0) return;
   const camera = cell.camera;
   camera.aspect = width / height;
-  const box = new Box3(new Vector3(...focus.min), new Vector3(...focus.max));
-  const size = box.getSize(new Vector3());
-  box.getCenter(_center);
-  const tan = Math.tan((CAMERA.fov * Math.PI) / 360);
-  const fit = Math.max(size.y / (2 * tan), Math.max(size.x, size.z) / (2 * tan * camera.aspect)) * 1.12;
-  const distance = fit + size.z / 2;
-  camera.position.set(_center.x, _center.y + distance * Math.cos(POLAR), _center.z + distance * Math.sin(POLAR));
-  camera.lookAt(_center);
-  camera.near = Math.max(0.1, distance - size.length() * 2);
-  camera.far = distance + size.length() * 3;
+  let basis: Basis;
+  let extents: Extents;
+  let fill = 1;
+  if (look.kind === "alone") {
+    basis = basisOfRows(VIEW_ROWS[look.view]);
+    extents = creatureExtents(body.rest, body.posed, basis);
+    fill = CELL_FILL;
+  } else {
+    basis = basisOfAngles(look.window.azimuth);
+    extents = windowExtents(look.window, body.minY, body.height, bandMiddle(body, basis, look.window), camera.aspect, basis);
+  }
+  if (!validExtents(extents)) return;
+  const at = fitExtents(extents, basis, camera.aspect, CAMERA.fov, fill);
+  const reach = Math.max(extents[3] - extents[0], extents[4] - extents[1], extents[5] - extents[2]);
+  // The view is set outright, not aimed: a pose's rows are a rotation already.
+  _axisX.set(...basis.right);
+  _axisY.set(...basis.up);
+  _axisZ.set(...basis.back);
+  _m.makeBasis(_axisX, _axisY, _axisZ);
+  camera.quaternion.setFromRotationMatrix(_m);
+  camera.position.set(...at.position);
+  camera.near = Math.max(0.05, at.distance - reach * 2);
+  camera.far = at.distance + reach * 3;
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld();
+}
+
+/** The middle of what stands in a window's band, across the view: a head, not a T-pose's arms. */
+function bandMiddle(body: SharedBody, basis: Basis, w: CellWindow): number {
+  const cy = body.minY + body.height * w.centre;
+  const half = (body.height * w.height) / 2;
+  const e = emptyExtents();
+  const p = body.posed;
+  for (let i = 0; i < p.length; i += 3) {
+    const y = p[i + 1]!;
+    if (y >= cy - half && y <= cy + half) addToExtents(e, basis, p[i]!, y, p[i + 2]!);
+  }
+  return validExtents(e) ? (e[0] + e[3]) / 2 : 0;
 }
 
 /** Scroll containers a cell can be clipped by. */

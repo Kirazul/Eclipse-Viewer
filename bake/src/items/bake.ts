@@ -101,6 +101,17 @@ export class MissingPart extends Error {
   }
 }
 
+/**
+ * This slot owns nothing in this file: a set's combined model with no part for a bracer, say.
+ * Not a failure: retail draws nothing of it there either, and the item is its other parts.
+ */
+export class NothingShows extends MissingPart {
+  constructor(what: string) {
+    super(what);
+    this.name = "NothingShows";
+  }
+}
+
 async function tryTexture(ctx: BakeContext, files: Tracked, fdid: number, want: Want, warnings: string[]): Promise<BakedTexture | null> {
   try {
     return await bakeTexture(ctx, files, fdid, want);
@@ -130,7 +141,7 @@ async function pieceLook(ctx: BakeContext, d: ResolvedDisplay, file: ModelFile, 
   const warnings: string[] = [];
   const textures: TextureEntry[] = [];
   const geosets = new Set(skin.submeshes.map((s) => s.id).filter((id) => filter.keep(id)));
-  if (geosets.size === 0) throw new MissingPart(`no submesh of ${file.fdid} shows under ${filter.tag}`);
+  if (geosets.size === 0) throw new NothingShows(`no submesh of ${file.fdid} shows under ${filter.tag}`);
   const used = texturesInUse(model, skin, geosets);
   for (let i = 0; i < model.textures.length; i++) {
     const tex = model.textures[i]!;
@@ -312,10 +323,11 @@ export async function bakeItem(ctx: BakeContext, spec: ItemSpec): Promise<{ mani
           await modelFor(modelId, hit.file, filter, hit, "pinned");
         } catch (e) {
           if (!(e instanceof MissingFile) && !(e instanceof MissingPart)) throw e;
+          models.delete(modelId);
+          if (e instanceof NothingShows) continue;
           // This body's cut cannot be read: this body goes without, and it is said.
           warnings.push(`${body.spec.id}: ${e.message}`);
           pinnedFailure = e;
-          models.delete(modelId);
           continue;
         }
         list.push({
@@ -349,9 +361,10 @@ export async function bakeItem(ctx: BakeContext, spec: ItemSpec): Promise<{ mani
         await modelFor(modelId, hit.file, filter, hit, "skinned");
       } catch (e) {
         if (!(e instanceof MissingFile) && !(e instanceof MissingPart)) throw e;
+        models.delete(modelId);
+        if (e instanceof NothingShows) continue;
         warnings.push(`${body.spec.id}: ${e.message}`);
         failure = e;
-        models.delete(modelId);
         continue;
       }
       collections[body.spec.id] = { manifest: modelId, ...(hit.donor ? { donor: hit.donor } : {}) };
@@ -361,7 +374,8 @@ export async function bakeItem(ctx: BakeContext, spec: ItemSpec): Promise<{ mani
 
   // ---- what the item paints on the body's own texture slots: a cloak's type 2
   const bodyTextures: NonNullable<ItemManifest["bodyTextures"]> = [];
-  if (d.models.length === 0) {
+  // A cloak with a model of its own can still show the body's cape: its GeosetGroup asks for it.
+  if (d.models.length === 0 || (spec.slot === "back" && d.geosetGroups[0])) {
     const list = d.modelTextures[0] ?? [];
     const file = pickTexture(list, 0, 0);
     if (file) {

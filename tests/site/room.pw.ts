@@ -26,8 +26,9 @@ test.describe("the dressing room", () => {
     await expect(tiles.first()).toBeVisible();
     const t0 = (await tiles.nth(0).boundingBox())!;
     const t1 = (await tiles.nth(1).boundingBox())!;
-    expect(t0.width).toBe(76); // kBoard
-    expect(t1.x - t0.x).toBe(86); // kBoard + kBoardPad
+    // Retail's card, sized by FitPage: the shape is fixed, and the gap scales with the card.
+    expect(Math.abs(t0.width / t0.height - 100 / 132)).toBeLessThan(0.002);
+    expect(t1.x - t0.x).toBeGreaterThan(t0.width);
   });
 
   test("hover tries on after the rest, click wears, ring releases", async ({ page, isMobile }) => {
@@ -35,12 +36,15 @@ test.describe("the dressing room", () => {
     await mockPacks(page);
     await openRoom(page);
     await clearCalls(page);
+    await page.evaluate(() => {
+      addEventListener("pointerover", () => { (window as unknown as { __over: number }).__over = performance.now(); }, true);
+    });
     const tile = page.locator(".tile:not(.hide)").nth(3);
     await tile.hover();
-    await page.waitForTimeout(40);
-    expect(await calls(page, "previewEquip")).toHaveLength(0); // inside kHoverRestSec
-    await page.waitForTimeout(150);
+    await expect.poll(async () => (await calls(page, "previewEquip")).length).toBeGreaterThan(0);
     const preview = await calls(page, "previewEquip");
+    const entered = await page.evaluate(() => (window as unknown as { __over: number }).__over);
+    expect(preview.at(-1)!.at - entered).toBeGreaterThanOrEqual(100); // kHoverRestSec
     expect(preview.at(-1)!.args[0]).toBe("head");
     expect((await calls(page, "focusSlot")).at(-1)!.args[0]).toBe("head");
     await expect(page.locator("#tip")).toContainText("head");
@@ -143,17 +147,17 @@ test.describe("the dressing room", () => {
     expect(errors).toEqual([]);
   });
 
-  test("figures mode asks the engine for live cells, and gives them back", async ({ page, isMobile }) => {
+  test("the grid asks the engine for one live cell, under a resting pointer, and gives it back", async ({ page, isMobile }) => {
     test.skip(isMobile, "desktop");
     await mockPacks(page);
     await openRoom(page);
-    await page.waitForTimeout(100);
-    await page.locator('[data-grid-mode="figures"]').click();
-    await expect.poll(() => page.evaluate(() => (window as unknown as { __figures: Set<unknown> }).__figures.size)).toBeGreaterThan(4);
-    const inMode = await page.evaluate(() => (window as unknown as { __figures: Set<unknown> }).__figures.size);
-    expect(inMode).toBeLessThan(60); // only visible cells
-    await page.locator('[data-grid-mode="icons"]').click();
-    await expect.poll(() => page.evaluate(() => (window as unknown as { __figures: Set<unknown> }).__figures.size)).toBe(0);
+    const live = () => page.evaluate(() => (window as unknown as { __figures: Set<unknown> }).__figures.size);
+    await expect(page.locator(".tile").first()).toBeVisible();
+    expect(await live()).toBe(0);
+    await page.locator(".tile:not(.hide)").first().hover();
+    await expect.poll(live).toBe(1);
+    await page.mouse.move(2, 2);
+    await expect.poll(live).toBe(0);
   });
 
   test("the look lives in the URL: a shared link rebuilds it", async ({ page }) => {

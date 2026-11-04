@@ -74,6 +74,17 @@ export const CELLS = {
   maxBudget: 24,
   /** Milliseconds of main-thread time the cell pass may use per frame. */
   frameMs: 4,
-  /** Composite resolution divisor: a grid figure is small. */
-  compositeDivisor: 2,
+  /** Composite resolution divisor. One: a slot's cell looks at the figure as closely as the stage does. */
+  compositeDivisor: 1,
+  /** Items, composites and idle bodies kept for an instant re-hover: a thousand hovers stay bounded. */
+  keepItems: 24,
+  keepComposites: 8,
+  keepBodies: 3,
 };
+
+/**
+ * Retail's edge fade, as its vertex programs read the model's EDGF curve (max, min, power):
+ * pow(saturate((|n.v| - min) / (max - min)), power). Every model Eclipse measured carries
+ * this one entry (mount_convert.py EDGF_DEFAULT, 64 of 64).
+ */
+export const EDGE_FADE = [0.72, 0.385, 1.22] as const;

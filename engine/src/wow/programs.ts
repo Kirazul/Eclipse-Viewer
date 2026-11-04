@@ -163,6 +163,23 @@ export function batchProgram(units: number, shader: number): BatchProgram {
   };
 }
 
+/**
+ * The batch programs the item catalogue uses, most common first: 26 keys over every GLB of
+ * its 3,274 items (a program is one per combiner case, side and alpha key). A shader id here
+ * only picks the case.
+ */
+export const CATALOGUE_PROGRAMS: readonly { units: number; shader: number; blend: number; flags: number }[] = [
+  { units: 2, shader: 0x8000, blend: 0, flags: 0 }, { units: 2, shader: 0x11, blend: 2, flags: 4 }, { units: 2, shader: 0x11, blend: 2, flags: 0 },
+  { units: 3, shader: 0x8003, blend: 0, flags: 0 }, { units: 1, shader: 0x10, blend: 2, flags: 0 }, { units: 1, shader: 0, blend: 0, flags: 0 },
+  { units: 1, shader: 0x10, blend: 1, flags: 0 }, { units: 2, shader: 0x14, blend: 2, flags: 4 }, { units: 2, shader: 0x8000, blend: 0, flags: 4 },
+  { units: 2, shader: 0x8002, blend: 0, flags: 0 }, { units: 1, shader: 0x10, blend: 1, flags: 4 }, { units: 1, shader: 0x10, blend: 2, flags: 4 },
+  { units: 2, shader: 6, blend: 0, flags: 0 }, { units: 2, shader: 0x16, blend: 2, flags: 0 }, { units: 3, shader: 0x8003, blend: 0, flags: 4 },
+  { units: 2, shader: 0x8002, blend: 0, flags: 4 }, { units: 2, shader: 0x13, blend: 2, flags: 0 }, { units: 2, shader: 0x14, blend: 2, flags: 0 },
+  { units: 2, shader: 0x8017, blend: 0, flags: 0 }, { units: 1, shader: 0, blend: 0, flags: 4 }, { units: 2, shader: 0x800b, blend: 2, flags: 0 },
+  { units: 2, shader: 0x8001, blend: 0, flags: 0 }, { units: 2, shader: 0x8023, blend: 2, flags: 4 }, { units: 2, shader: 0x11, blend: 1, flags: 4 },
+  { units: 2, shader: 0x8017, blend: 0, flags: 4 }, { units: 2, shader: 0x800a, blend: 0, flags: 0 },
+];
+
 /** GL blend state for a retail blend mode, in terms the renderer can apply. */
 export type BlendFactor = "one" | "zero" | "srcAlpha" | "invSrcAlpha" | "dstColor" | "srcColor";
 export interface BlendState {

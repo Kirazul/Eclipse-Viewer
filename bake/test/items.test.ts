@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { fileForBody, itemUnitId } from "../src/items/bake";
 import { LINES, isPlaceholder } from "../src/items/lines";
-import { type ModelFile, type TextureFile, attachmentFor, facetOf, geosetFilter, isSkinnedModel, padBits, pickTexture, slotOfDisplayType } from "../src/items/resolve";
+import { ownedGeosets } from "@eclipse/format";
+import { type ModelFile, type TextureFile, attachmentFor, facetOf, geosetFilter, isCombined, isSkinnedModel, padBits, pickTexture, slotOfDisplayType } from "../src/items/resolve";
 
 const model = (over: Partial<ModelFile> = {}): ModelFile => ({ k: 0, fdid: 1, race: 0, sex: 3, classId: 0, position: -1, ...over });
 const tex = (over: Partial<TextureFile> = {}): TextureFile => ({ fdid: 1, usage: 0, race: 0, sex: 3, classId: 0, ...over });
@@ -129,5 +130,43 @@ describe("lines", () => {
     expect(isPlaceholder("[PH] thing")).toBe(true);
     expect(isPlaceholder("  ")).toBe(true);
     expect(isPlaceholder("Void Nemesis' Raiment")).toBe(false);
+  });
+});
+
+describe("is a model file worn by more than one slot?", () => {
+  /** Rows in table order: most rows naming a resource have no appearance at all. */
+  const db = (rows: { id: string; res: number; displayType?: number }[]) =>
+    ({
+      where: async (table: string, column: string, value: string | number) => {
+        if (table === "ItemDisplayInfo") return column === "ModelResourcesID_0" ? rows.filter((r) => r.res === value).map((r) => ({ ID: r.id })) : [];
+        if (table === "ItemAppearance") return rows.filter((r) => r.id === value && r.displayType !== undefined).map((r) => ({ DisplayType: String(r.displayType) }));
+        return [];
+      },
+    }) as never;
+
+  it("finds the other slot past any number of rows with no appearance", async () => {
+    // Display 740942's resource: 54 of its 78 rows have no appearance, and they come first.
+    const rows = [
+      ...Array.from({ length: 54 }, (_, i) => ({ id: `none-${i}`, res: 86614 })),
+      { id: "gloves", res: 86614, displayType: 8 },
+      { id: "chest", res: 86614, displayType: 3 },
+    ];
+    expect(await isCombined(db(rows), 86614, "hands")).toBe(true);
+  });
+
+  it("a file only this slot wears is not combined", async () => {
+    const rows = [{ id: "a", res: 1, displayType: 0 }, { id: "b", res: 1 }, { id: "c", res: 1, displayType: 0 }];
+    expect(await isCombined(db(rows), 1, "head")).toBe(false);
+    expect(await isCombined(db(rows), 0, "head")).toBe(false);
+  });
+});
+
+describe("what a slot shows of a combined model", () => {
+  it("its own groups and ungrouped geometry, nothing of another slot", () => {
+    expect(ownedGeosets([0, 401, 1101, 1301, 2001, 2201, 2301, 2801], "hands")).toEqual([0, 401, 2301]);
+    expect(ownedGeosets([501, 1101, 2001, 2701], "head")).toEqual([2701]);
+    expect(ownedGeosets([401, 1301, 1801], "wrist")).toEqual([]);
+    // A slot with no rule leaves a model alone: a weapon's geosets are its own.
+    expect(ownedGeosets([0, 401], "mainhand")).toEqual([0, 401]);
   });
 });

@@ -15,6 +15,20 @@ const INVISIBLE = new Set([124640, 124641, 124642, 343863, 439302, 1347127]);
 /** Taken out of Eclipse's list by its owner, 2026-10-17: creature/hippogryphmount. */
 const OWNER_REMOVED = new Set([124410]);
 const FLIES = 0x2;
+/** A name no player was meant to read: Blizzard's own marks, and a test rig under any other name. */
+const INTERNAL_NAME = /\[(?:DND|DNT|PH|NYI|TEST|WIP)\]|\bTest Mount\b|\bModel Test\b|\bNYI\b/i;
+
+/**
+ * Mounts the game keeps from its players, by measurement at 12.1.0.69933. Mount.Flags 0x40
+ * "hide if unknown" is NOT one of these: it is on 436 rows, Swift Razzashi Raptor and every
+ * Gladiator's mount among them, because it only means the Journal hides what you can't get.
+ * What marks an internal row is no words at all: no description and no source text, so the
+ * Journal has nothing to say about it (Lightforged Ruinstrider 1567, Whelpling 1690 and 1796).
+ */
+export function isInternalMount(m: { Name_lang?: string; Description_lang?: string; SourceText_lang?: string }): boolean {
+  if (INTERNAL_NAME.test(m.Name_lang ?? "") || /^\s*NYI\s*$/i.test(m.Description_lang ?? "")) return true;
+  return !(m.Description_lang ?? "").trim() && !(m.SourceText_lang ?? "").trim();
+}
 
 export interface MountVariantSpec {
   display: number;
@@ -84,6 +98,10 @@ export async function scanMounts(ctx: BakeContext): Promise<MountScan> {
     const name = m.Name_lang ?? "";
     if (isPlaceholder(name)) {
       drop("placeholder name");
+      continue;
+    }
+    if (isInternalMount(m)) {
+      drop("internal");
       continue;
     }
     const display = num(x.CreatureDisplayInfoID);

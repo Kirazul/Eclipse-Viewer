@@ -42,6 +42,5 @@ export const $catalogState = atom<"loading" | "ready" | "error">("loading");
 /** Class scene behind the figure, or "off" for a flat colour. */
 export const DEFAULT_SCENE = "mage";
 export const $scene = atom<string>(DEFAULT_SCENE);
-export const $gridMode = atom<"icons" | "figures">("icons");
 
 export const SCENES = ["warrior", "paladin", "hunter", "rogue", "priest", "deathknight", "shaman", "mage", "warlock", "druid"] as const;

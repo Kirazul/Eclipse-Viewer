@@ -57,6 +57,12 @@ export interface Part {
   usesComposite: boolean[];
   /** Units reading a texture the model leaves to what it wears: a cloak's type 2 on geoset 15xx. */
   worn: { unit: number; type: number }[];
+  /**
+   * Units nothing has painted. A batch sampling one is not drawn at all: the white
+   * placeholder would show as a flat sheet, and retail draws nothing it cannot bind
+   * (Eclipse measured it in game: midnight_convert.py, the Oblivion Guise set).
+   */
+  blank: Set<number>;
   wireframe: boolean;
 }
 
@@ -147,7 +153,7 @@ export class Figure {
       const raw = (mesh.material as Material).userData as Partial<SubmeshExtras> | undefined;
       const extras: SubmeshExtras = { ...NO_EXTRAS, ...raw, hash: raw?.hash ?? order };
       (mesh.material as Material).dispose();
-      const material = new BatchMaterial(extras);
+      const material = new BatchMaterial(extras, !!(mesh.geometry as BufferGeometry).getAttribute("uv1"));
       mesh.material = material;
       mesh.frustumCulled = false;
       mesh.renderOrder = batchRenderOrder(extras.priority, order, layer);
@@ -168,6 +174,7 @@ export class Figure {
         waiting: [],
         usesComposite: [],
         worn: [],
+        blank: new Set(),
         wireframe: false,
       };
       this.bindUnits(part);
@@ -233,7 +240,10 @@ export class Figure {
       if (!entry.key) {
         // Produced at runtime. Only a type 1 has a composite to read.
         if (entry.type === 1) part.usesComposite[i] = true;
-        else part.worn.push({ unit: i, type: entry.type });
+        else {
+          part.worn.push({ unit: i, type: entry.type });
+          part.blank.add(i);
+        }
         return;
       }
       const texture = assets.textureFor(unit.tex, unit.wrapS, unit.wrapT);
@@ -321,6 +331,8 @@ export class Figure {
         part.waiting = part.waiting.filter((w) => w.unit !== i);
         const wrapped = texture ? this.assets.wrapped(texture, unit.wrapS, unit.wrapT) : whiteTexture();
         part.material.uniforms[UNIT_KEYS[i]!].value = wrapped;
+        if (texture) part.blank.delete(i);
+        else part.blank.add(i);
         if (i === 0) part.material.setShadowCut(texture ? wrapped : null);
       });
       if (touched) this.refreshReady(part);
@@ -370,15 +382,30 @@ export class Figure {
     return this.faceBones.has(bone);
   }
 
-  /** What the outfit puts on the body's own texture slots, by type. Nothing worn: white, and hidden by its geoset. */
+  /**
+   * What the outfit puts on the body's own texture slots, by type. A slot the outfit
+   * leaves alone keeps what the look painted there: a Dracthyr's wings are type 10, and
+   * putting on gloves must not take their art away. Nothing at all: the batch isn't drawn.
+   */
   setWornTextures(byType: ReadonlyMap<number, Texture>): void {
+    let changed = false;
     for (const part of this.parts) {
+      if (part.worn.length === 0) continue;
       for (const { unit, type } of part.worn) {
-        const texture = byType.get(type) ?? null;
+        const texture = byType.get(type) ?? this.typeTextures.get(type) ?? null;
         part.material.uniforms[UNIT_KEYS[unit]!].value = texture ?? whiteTexture();
+        if (texture) part.blank.delete(unit);
+        else part.blank.add(unit);
         if (unit === 0) part.material.setShadowCut(texture);
       }
+      changed = true;
     }
+    if (changed) this.refreshVisibility();
+  }
+
+  /** What the look painted on a retail texture type. Null: nothing. */
+  lookTexture(type: number): Texture | null {
+    return this.typeTextures.get(type) ?? null;
   }
 
   /** Points every composite unit at this texture, in one step. */
@@ -412,7 +439,7 @@ export class Figure {
 
   refreshVisibility(): void {
     for (const part of this.parts) {
-      part.mesh.visible = part.ready && (part.userVisible ?? part.shown);
+      part.mesh.visible = part.ready && part.blank.size === 0 && (part.userVisible ?? part.shown);
     }
   }
 

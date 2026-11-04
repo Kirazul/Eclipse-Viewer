@@ -83,6 +83,15 @@ export interface ViewerEngine {
   equip(slot: import("@eclipse/format").SlotId, itemId: string | null): Promise<void>;
   /** Show an item on the figure without committing. null ends the preview. */
   previewEquip(slot: import("@eclipse/format").SlotId, itemId: string | null): Promise<void>;
+  /** The pointer has reached these: fetch and prepare them, show nothing. A click then swaps at once. Empty stops asking. */
+  prefetchEquip(pieces: readonly (readonly [import("@eclipse/format").SlotId, string])[]): void;
+  /**
+   * What the pointer may reach next, into the browser's cache and nothing further, low in the
+   * queue. `whole` false fetches only the manifests: the first round trip of a later hover.
+   */
+  warmItems(pieces: readonly (readonly [import("@eclipse/format").SlotId, string])[], whole: boolean): void;
+  /** Links every program the item catalogue uses, on idle, so a new item never waits for one. Once; a fixed set. */
+  warmPrograms(): void;
   /** Weapons in hand, or on their sheath points. */
   setSheathed(sheathed: boolean): void;
   /**
@@ -95,8 +104,14 @@ export interface ViewerEngine {
   /**
    * Live 3D grid cells: one shared WebGL context drawing every visible cell by
    * scissor, so a page of figures costs no extra contexts. Returns a remove function.
+   * A grid asks for one at a time, over a poster, and `onDrawn` says the poster can go.
    */
-  addFigureCell(el: HTMLElement, opts: { bodyId?: string; itemId?: string; setId?: string }): () => void;
+  addFigureCell(el: HTMLElement, opts: { bodyId?: string; itemId?: string; setId?: string; effects?: boolean; onDrawn?: () => void; onFailed?: (err: unknown) => void }): () => void;
+  /**
+   * What the poster baker would draw for this cell, as an image URL, for an entry the bake
+   * hasn't reached. No pixel of it touches the screen until the page shows it. Null: nothing to show.
+   */
+  figurePoster(opts: { bodyId?: string; itemId?: string; setId?: string; pieces?: Partial<Record<import("@eclipse/format").SlotId, string>> }, width: number, height: number): Promise<string | null>;
 
   // Export
   exportPNG(scale: number, trim: boolean): Promise<void>;

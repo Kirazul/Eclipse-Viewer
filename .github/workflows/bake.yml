@@ -8,13 +8,17 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: "What to bake: a model id (human-male), a class (bodies, mounts, items), a line (items:midnight, items:warwithin, items:client, items:eclipse), a sample (sample:300) or all"
+        description: "What to bake: a model id (human-male), a class (bodies, mounts, items), a line (items:midnight, items:warwithin, items:client, items:eclipse), a sample (sample:300), all, or posters of what those baked (posters:mounts, posters:items:midnight, posters:sets:midnight, posters:all)"
         default: human-male
       shards:
         description: "Parallel jobs, 1-20"
         default: "4"
       force:
         description: "Re-bake even if the output already exists"
+        type: boolean
+        default: false
+      redo:
+        description: "Bake the scope's units again, writing only what changed: a manifest's fix costs a manifest's write. Force rewrites every object."
         type: boolean
         default: false
       allow_partial:
@@ -49,7 +53,7 @@ jobs:
           key: tact-${{ hashFiles('packages/format/src/config.ts') }}
       - run: pnpm bake catalog --upload
       - id: plan
-        run: pnpm bake plan --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} ${{ inputs.allow_partial && '--allow-partial' || '' }} --github-output "$GITHUB_OUTPUT"
+        run: pnpm bake plan --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} ${{ inputs.redo && '--redo' || '' }} ${{ inputs.allow_partial && '--allow-partial' || '' }} --github-output "$GITHUB_OUTPUT"
 
   bake:
     needs: plan
@@ -65,13 +69,17 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm }
-      - run: pnpm install --frozen-lockfile --filter @eclipse/bake...
+      # A poster is drawn by the engine in a real browser: the engine, Vite and Playwright
+      # come along for that scope, and no other bake pays for them.
+      - run: pnpm install --frozen-lockfile ${{ !startsWith(inputs.scope, 'posters:') && '--filter @eclipse/bake...' || '' }}
+      - if: startsWith(inputs.scope, 'posters:')
+        run: npx playwright install --with-deps chromium
       - uses: actions/cache@v4
         with:
           path: work/tact
           key: tact-${{ hashFiles('packages/format/src/config.ts') }}
       # Each object is uploaded as soon as it is done, so a re-run skips finished work.
-      - run: pnpm bake run --scope "${{ inputs.scope }}" --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} --upload
+      - run: pnpm bake run --scope "${{ inputs.scope }}" --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} ${{ inputs.redo && '--redo' || '' }} --upload
 
   report:
     needs: [plan, bake]

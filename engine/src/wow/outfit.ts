@@ -5,12 +5,12 @@
  * applies a plan in one step, once everything in it can draw.
  */
 import { Group, Matrix4, Skeleton, Uint16BufferAttribute, type Bone, type Object3D, type SkinnedMesh, type Texture } from "three";
-import { packUrl, paths, type AttachedPiece, type ItemManifest, type SlotId, type Vec3 } from "@eclipse/format";
-import { fetchBytes, fetchJson } from "../net/fetchPack";
+import { ownedGeosets, packUrl, paths, type AttachedPiece, type ItemManifest, type SlotId, type Vec3 } from "@eclipse/format";
+import { fetchBytes, fetchJson, isAbort } from "../net/fetchPack";
 import { ModelAssets, registerManifests, type LoadEnv } from "../model/assets";
+import { textureStore, type Lease } from "../model/shared";
 import { boneIndex } from "../logic/pivots";
 import { Figure } from "../model/figure";
-import { parseTexture } from "../model/loaders";
 import { outfitGeosets } from "../logic/geosets";
 import { COMP_FLAGS, EMPTY_SLOT, SHEATH_POINTS, SLOTS, handPose, type GeoSlot } from "../logic/retailGeo";
 import { DEFAULT_SECTIONS, PAINT_ORDER, componentSlot } from "../logic/slots";
@@ -51,6 +51,8 @@ export interface ResolvedItem {
   /** What it paints on the body's own texture slots, by type. */
   wornTextures: { type: number; texture: Texture }[];
   warnings: string[];
+  /** Its holds on the textures above, which other items may read too. */
+  leases: Lease[];
 }
 
 let pieceNames = 0;
@@ -153,8 +155,18 @@ export function rebindCollection(piece: Figure, body: Figure): number {
   return matched;
 }
 
+interface LibraryEntry {
+  promise: Promise<ResolvedItem>;
+  abort: AbortController;
+  used: number;
+  /** Set once it has arrived. */
+  item: ResolvedItem | null;
+  /** Worn for real at some point: stays warm longer than something only hovered. */
+  worn: boolean;
+}
+
 export class ItemLibrary {
-  private readonly items = new Map<string, { promise: Promise<ResolvedItem>; abort: AbortController; used: number }>();
+  private readonly items = new Map<string, LibraryEntry>();
   private tick = 0;
 
   constructor(
@@ -162,10 +174,12 @@ export class ItemLibrary {
     private readonly body: Figure,
     /** Items kept ready for an instant re-hover. */
     private readonly keep = 12,
+    /** On top of those, items that were worn: going back to the last few sets is instant. */
+    private readonly keepWorn = 0,
   ) {}
 
   /** A hand item worn in the other hand is another piece: it hangs and mirrors for that hand. */
-  resolve(id: string, worn?: SlotId): Promise<ResolvedItem> {
+  resolve(id: string, worn?: SlotId, group = 0): Promise<ResolvedItem> {
     const key = itemKey(id, worn);
     const hit = this.items.get(key);
     if (hit) {
@@ -173,13 +187,81 @@ export class ItemLibrary {
       return hit.promise;
     }
     const abort = new AbortController();
-    const promise = this.load(id, abort.signal, worn);
-    const entry = { promise, abort, used: ++this.tick };
+    const promise = this.load(id, abort.signal, worn, group);
+    const entry: LibraryEntry = { promise, abort, used: ++this.tick, item: null, worn: false };
     this.items.set(key, entry);
-    promise.catch(() => {
-      if (this.items.get(key) === entry) this.items.delete(key);
-    });
+    promise.then(
+      (item) => {
+        if (this.items.get(key) === entry) entry.item = item;
+        // Cut loose while its last parts came in: nobody will ever free it otherwise.
+        else disposeItem(item);
+      },
+      () => {
+        if (this.items.get(key) === entry) this.items.delete(key);
+      },
+    );
     return promise;
+  }
+
+  /**
+   * What the pointer may reach next, into the browser's cache and nothing further: no decode,
+   * no upload, a low place in the queue, and a newer call drops what hasn't got a socket yet.
+   * `whole` false stops at the manifest, which takes the first round trip off a later hover.
+   */
+  warm(entries: readonly (readonly [SlotId, string])[], whole: boolean): void {
+    const channel = whole ? 1 : 0;
+    this.warming[channel]?.abort();
+    const abort = new AbortController();
+    this.warming[channel] = abort;
+    for (const [slot, id] of entries) {
+      if (this.items.has(itemKey(id, slot))) continue;
+      this.warmOne(id, whole, abort.signal).catch((err: unknown) => {
+        if (!isAbort(err)) console.warn(`[eclipse] item ${id} could not be warmed:`, err);
+      });
+    }
+  }
+
+  private readonly warming: (AbortController | null)[] = [null, null];
+
+  private async warmOne(id: string, whole: boolean, signal: AbortSignal): Promise<void> {
+    const { env, body } = this;
+    const manifest = await fetchJson<ItemManifest>(packUrl(env.base, paths.item(id)), { signal, priority: "low", finish: true });
+    if (!whole) return;
+    const keys = new Map<string, number>();
+    const models = [...(manifest.attachedBy ? manifest.attachedBy[body.id] ?? [] : manifest.attached ?? []).map((a) => a.manifest)];
+    const collection = collectionFor(manifest.collections ?? {}, body.id);
+    if (collection) models.push(collection.manifest);
+    for (const modelId of models) {
+      const m = manifest.models?.[modelId];
+      if (!m) continue;
+      keys.set(m.glb.key, m.glb.bytes);
+      if (m.fx) keys.set(m.fx.key, m.fx.bytes);
+      for (const i of m.defaultTextures ?? []) {
+        const t = m.textures[i];
+        if (t?.key) keys.set(t.key, t.bytes);
+      }
+      const clip = m.clips.find((c) => c.id === m.defaultClip);
+      if (clip) keys.set(clip.key, clip.bytes);
+    }
+    const sex = body.id.endsWith("-female") ? 1 : 0;
+    const layers = manifest.bodyLayersBy ? manifest.bodyLayersBy[body.id] ?? [] : (manifest.bodyLayers ?? []).filter((l) => l.sex === undefined || l.sex === sex);
+    for (const l of layers) keys.set(l.key, l.bytes);
+    for (const t of manifest.bodyTextures ?? []) keys.set(t.key, t.bytes);
+    await Promise.all([...keys].map(([key, bytes]) => fetchBytes(packUrl(env.base, key), { signal, priority: "low", expected: bytes, finish: true })));
+  }
+
+  /** The item, if it has arrived. Answers in the same tick, so a warm one swaps in the same frame. */
+  peek(key: string): ResolvedItem | null {
+    const entry = this.items.get(key);
+    if (!entry?.item) return null;
+    entry.used = ++this.tick;
+    return entry.item;
+  }
+
+  /** This one was really worn: it stays warm in the longer list. */
+  markWorn(key: string): void {
+    const entry = this.items.get(key);
+    if (entry) entry.worn = true;
   }
 
   private place(attachment: number, a: AttachedPiece, slot: SlotId, stowed: boolean): { parent: Object3D | null; matrix: Matrix4; mirrored: boolean } | null {
@@ -192,15 +274,22 @@ export class ItemLibrary {
     return { parent: body.bones.get(`b${point.bone}`) ?? null, matrix, mirrored: pose.mirrored };
   }
 
-  private async load(id: string, signal: AbortSignal, worn?: SlotId): Promise<ResolvedItem> {
+  private async load(id: string, signal: AbortSignal, worn: SlotId | undefined, group: number): Promise<ResolvedItem> {
     const { env, body } = this;
-    const manifest = await fetchJson<ItemManifest>(packUrl(env.base, paths.item(id)), { signal, priority: "high" });
+    const manifest = await fetchJson<ItemManifest>(packUrl(env.base, paths.item(id)), { signal, priority: env.priority ?? "high", group, finish: true });
     registerManifests(manifest.models);
     const warnings: string[] = [];
     const piecePromises: Promise<Piece | null>[] = [];
     const slot = worn ?? manifest.slot;
     // An item retail cuts per body lists each body's pieces; a body it does not list wears none.
     const attachedList = manifest.attachedBy ? manifest.attachedBy[body.id] ?? [] : manifest.attached ?? [];
+    const store = textureStore(env.renderer);
+    const leases: Lease[] = [];
+    const lease = (key: string, bytes: number, anisotropy: number): Promise<Texture> => {
+      const held = store.acquire(packUrl(env.base, key), bytes, anisotropy, group, env.priority);
+      leases.push(held);
+      return held.texture;
+    };
 
     for (const a of attachedList) {
       piecePromises.push(
@@ -214,7 +303,7 @@ export class ItemLibrary {
           const hand = slot === "offhand" ? 1 : 0;
           const stowPoint = a.sheathPoints?.[hand];
           const stowed = stowPoint !== undefined ? this.place(stowPoint, a, slot, true) : null;
-          const assets = await ModelAssets.load(a.manifest, env, { signal });
+          const assets = await ModelAssets.load(a.manifest, env, { signal, shared: true, group });
           const figure = new Figure(assets, { layer: 2, namePrefix: `p${++pieceNames}_` });
           const anchor = new Group();
           anchor.name = `attachment-${attachment}`;
@@ -229,70 +318,82 @@ export class ItemLibrary {
 
     const collection = collectionFor(manifest.collections ?? {}, body.id);
     if (collection) {
-      piecePromises.push(
-        (async () => {
-          const assets = await ModelAssets.load(collection.manifest, env, { signal });
-          const figure = new Figure(assets, { layer: 1 });
-          rebindCollection(figure, body);
-          return { kind: "collection" as const, figure, parent: body.root, node: figure.root, mirrored: false };
-        })(),
-      );
+      // A set's combined model holds every slot's parts: this item shows its own. Baked
+      // manifests from before the baker knew say more, and the rule is the same one.
+      const model = manifest.models?.[collection.manifest];
+      if (model) model.defaultGeosets = ownedGeosets(model.defaultGeosets, manifest.slot);
+      if (!model || model.defaultGeosets.length > 0) {
+        piecePromises.push(
+          (async () => {
+            const assets = await ModelAssets.load(collection.manifest, env, { signal, shared: true, group });
+            const figure = new Figure(assets, { layer: 1 });
+            rebindCollection(figure, body);
+            return { kind: "collection" as const, figure, parent: body.root, node: figure.root, mirrored: false, slot };
+          })(),
+        );
+      }
     }
 
     const sex = body.id.endsWith("-female") ? 1 : 0;
     const layerList: { section: number; key: string; bytes: number }[] = manifest.bodyLayersBy
       ? manifest.bodyLayersBy[body.id] ?? []
       : (manifest.bodyLayers ?? []).filter((l) => l.sex === undefined || l.sex === sex);
-    const layerPromises = layerList.map(async (l) => {
-      const bytes = await fetchBytes(packUrl(env.base, l.key), { signal, priority: "high", expected: l.bytes });
-      return { section: l.section, texture: await parseTexture(env.renderer, bytes, 1) };
-    });
+    const layerPromises = layerList.map(async (l) => ({ section: l.section, texture: await lease(l.key, l.bytes, 1) }));
+    const wornPromises = (manifest.bodyTextures ?? []).map(async (t) => ({ type: t.type, texture: await lease(t.key, t.bytes, env.anisotropy()) }));
 
-    const wornPromises = (manifest.bodyTextures ?? []).map(async (t) => {
-      const bytes = await fetchBytes(packUrl(env.base, t.key), { signal, priority: "high", expected: t.bytes });
-      return { type: t.type, texture: await parseTexture(env.renderer, bytes, env.anisotropy()) };
-    });
-
-    const [pieces, layers, wornTextures] = await Promise.all([Promise.all(piecePromises), Promise.all(layerPromises), Promise.all(wornPromises)]);
-    return { id, manifest, pieces: pieces.filter((p): p is Piece => p !== null), layers, wornTextures, warnings };
+    // Everything settles before the answer: what did arrive of a failed item is freed here,
+    // or it would hang on the body's bones with nothing left to find it by.
+    const [pieces, layers, wornTextures] = await Promise.all([Promise.allSettled(piecePromises), Promise.allSettled(layerPromises), Promise.allSettled(wornPromises)]);
+    const failure = [...pieces, ...layers, ...wornTextures].find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failure) {
+      for (const r of pieces) {
+        if (r.status === "fulfilled" && r.value) {
+          r.value.node.removeFromParent();
+          r.value.figure.dispose();
+        }
+      }
+      for (const l of leases) l.release();
+      throw failure.reason;
+    }
+    const kept = <T,>(list: PromiseSettledResult<T>[]): T[] => list.map((r) => (r as PromiseFulfilledResult<T>).value);
+    return { id, manifest, pieces: kept(pieces).filter((p): p is Piece => p !== null), layers: kept(layers), wornTextures: kept(wornTextures), warnings, leases };
   }
 
   /** Stops a fetch nobody wants any more. A finished item stays for a re-hover. */
   cancelUnwanted(wanted: ReadonlySet<string>): void {
     for (const [id, entry] of this.items) {
-      if (!wanted.has(id) && !entry.abort.signal.aborted) {
-        let settled = false;
-        entry.promise.then(
-          () => (settled = true),
-          () => (settled = true),
-        );
-        queueMicrotask(() => {
-          if (!settled) {
-            entry.abort.abort();
-            this.items.delete(id);
-          }
-        });
-      }
+      if (wanted.has(id) || entry.item) continue;
+      entry.abort.abort();
+      this.items.delete(id);
     }
   }
 
   /** Keeps the cache to size. Nothing in use and nothing still loading is touched. */
   async trim(inUse: ReadonlySet<string>, dispose: (item: ResolvedItem) => void): Promise<void> {
-    if (this.items.size <= this.keep) return;
-    const oldest = [...this.items.entries()]
-      .filter(([id]) => !inUse.has(id))
-      .sort((a, b) => a[1].used - b[1].used);
-    for (const [id, entry] of oldest.slice(0, this.items.size - this.keep)) {
+    const free = [...this.items.entries()].filter(([id, e]) => !inUse.has(id) && e.item).sort((a, b) => b[1].used - a[1].used);
+    // Newest first: what is past its list's length goes, the oldest of it having waited longest.
+    let keep = this.keep;
+    let keepWorn = this.keepWorn;
+    for (const [id, entry] of free) {
+      if (entry.worn && keepWorn > 0) {
+        keepWorn--;
+        continue;
+      }
+      if (keep > 0) {
+        keep--;
+        continue;
+      }
       this.items.delete(id);
-      entry.abort.abort();
-      entry.promise.then(dispose, () => undefined);
+      dispose(entry.item!);
     }
   }
 
   disposeAll(): void {
+    for (const w of this.warming) w?.abort();
     for (const entry of this.items.values()) {
       entry.abort.abort();
-      entry.promise.then(disposeItem, () => undefined);
+      // One that was cut loose is freed when it lands.
+      if (entry.item) disposeItem(entry.item);
     }
     this.items.clear();
   }
@@ -315,8 +416,7 @@ export function disposeItem(item: ResolvedItem): void {
     piece.node.removeFromParent();
     piece.figure.dispose();
   }
-  for (const l of item.layers) l.texture.dispose();
-  for (const t of item.wornTextures) t.texture.dispose();
+  for (const l of item.leases) l.release();
 }
 
 function anchorMatrix(out: Matrix4, position: Vec3, scale: readonly [number, number, number], sheath?: number[]): void {

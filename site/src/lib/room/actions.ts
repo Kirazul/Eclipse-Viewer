@@ -1,13 +1,13 @@
 import type { SetEntry, SlotId } from "@eclipse/format";
 import { $loaded, clearPickedMounts } from "../share/state";
 import { ALL_SLOTS } from "../slots";
-import { endHover, settled } from "./hover";
+import { endHover, settled, stageWork } from "./hover";
 import { $body, $engine, $lookText, $slot, $tab, $worn, type Tab } from "./state";
 
 /** Clicking is the whole gesture: no confirm step, nothing locked. */
 export async function wear(slot: SlotId, id: string) {
   $worn.set({ ...$worn.get(), [slot]: id });
-  await $engine.get()?.equip(slot, id);
+  await stageWork(Promise.resolve($engine.get()?.equip(slot, id)));
   settled(slot, id);
 }
 
@@ -22,7 +22,7 @@ export async function release(slot: SlotId) {
 export async function wearSet(set: SetEntry) {
   const engine = $engine.get();
   $worn.set({ ...set.pieces });
-  await Promise.all(ALL_SLOTS.map((s) => engine?.equip(s, set.pieces[s] ?? null)));
+  await stageWork(Promise.all(ALL_SLOTS.map((s) => engine?.equip(s, set.pieces[s] ?? null))));
   for (const [s, id] of Object.entries(set.pieces)) settled(s as SlotId, id);
 }
 
@@ -31,9 +31,8 @@ export async function resetLook() {
   $loaded.set(null);
   clearPickedMounts();
   const engine = $engine.get();
-  const worn = Object.keys($worn.get()) as SlotId[];
   $worn.set({});
-  await Promise.all(worn.map((s) => engine?.equip(s, null)));
+  await Promise.all(ALL_SLOTS.map((s) => engine?.equip(s, null)));
   engine?.focusSlot(null);
 }
 
@@ -64,5 +63,6 @@ export async function setBody(id: string, lookText?: string) {
   const engine = $engine.get();
   if (!engine) return;
   await engine.loadModel(id, text || undefined);
-  await Promise.all(Object.entries($worn.get()).map(([s, item]) => engine.equip(s as SlotId, item ?? null)));
+  const worn = $worn.get();
+  await Promise.all(ALL_SLOTS.map((s) => engine.equip(s, worn[s] ?? null)));
 }

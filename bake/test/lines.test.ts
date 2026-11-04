@@ -173,7 +173,7 @@ describe("the catalogue validates itself", () => {
     const out = buildShards(store, [snap([1, 2, 3, 4, 5, 6].map((d) => row(d)))], records);
     expect(out.shards.get(paths.itemShard("midnight", "head"))!.rows.map((r) => r[0])).toEqual([1]);
     const s = out.stats.get("midnight")!;
-    expect(s).toEqual({ listed: 1, notBaked: 1, failed: 4, entries: 1 });
+    expect(s).toEqual({ listed: 1, notBaked: 1, failed: 4, entries: 1, posters: 0 });
     expect(listable(store, records.get("item-1"), paths.item("item-1"))).toBe(true);
     expect(listable(store, undefined, paths.item("item-1"))).toBe(false);
   });

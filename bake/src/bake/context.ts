@@ -11,6 +11,8 @@ export interface BakeContext {
   db: Db2;
   store: Store;
   force: boolean;
+  /** Bakes the scope again whatever its record says, yet every object already stored stays: a manifest's fix costs a manifest's write. */
+  redo?: boolean;
   /** Limits per-body work to these bodies. Local proofs on a slow line; the cloud bakes all. */
   onlyBodies?: Set<string>;
   /** Local proofs on a slow line: only these clips are baked. The cloud bakes all. */
@@ -52,6 +54,10 @@ export interface BakeRecord {
   notOn?: string[];
   /** Mount units: the displays that baked. */
   variants?: number[];
+  /** Poster units: the object each body's poster is. What stands alone has only `male`. */
+  posters?: Record<string, string>;
+  /** It failed for a reason no retry changes: the run moves on. */
+  final?: boolean;
 }
 
 export function recordKey(id: string): string {
@@ -84,7 +90,7 @@ export async function writeRecord(store: Store, r: BakeRecord): Promise<void> {
  * still done if every input's identity is unchanged.
  */
 export async function isUpToDate(ctx: BakeContext, id: string, outputKey: string): Promise<boolean> {
-  if (ctx.force) return false;
+  if (ctx.force || ctx.redo) return false;
   const r = await readRecord(ctx.store, id);
   if (!r || r.status !== "ok" || r.baker !== BAKER_VERSION) return false;
   if ((await ctx.store.stat(outputKey)) === null) return false;

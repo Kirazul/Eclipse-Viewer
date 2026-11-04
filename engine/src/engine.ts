@@ -56,13 +56,14 @@ import { anisotropyFor, effectiveTier, isSoftwareRenderer, pixelRatioFor } from 
 import { resolveShortcut } from "./logic/keyboard";
 import { ByteProgress } from "./logic/progress";
 import { slotView } from "./logic/slots";
-import { fetchBytes, isAbort, yieldToMain } from "./net/fetchPack";
+import { fetchBytes, isAbort, yieldToMain, queueState } from "./net/fetchPack";
 import { ModelAssets, type LoadEnv } from "./model/assets";
 import { ClipDirector } from "./model/director";
 import { Figure, type Part } from "./model/figure";
 import { ktx2Loader, whiteTexture } from "./model/loaders";
 import { CompositeRenderer } from "./wow/composite";
 import { BatchMaterial } from "./wow/material";
+import { CATALOGUE_PROGRAMS } from "./wow/programs";
 import { Wardrobe, type OutfitChange, type WardrobeHost } from "./wow/wardrobe";
 import { Customizer, type LookHost } from "./wow/customize";
 import type { OutlineRig } from "./render/outline";
@@ -632,7 +633,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
       mesh.bind(new Skeleton([bone]));
       return mesh;
     };
-    const batch = new BatchMaterial({ hash: 0, geoset: 0, units: [], shader: 0, blend: 0, flags: 0, priority: 0, color: -1, opacity: -1 });
+    const batch = new BatchMaterial({ hash: 0, geoset: 0, units: [], shader: 0, blend: 0, flags: 0, priority: 0, color: -1, opacity: -1 }, true);
     const depth = [BackSide, DoubleSide].map((side) => new MeshDepthMaterial({ depthPacking: RGBADepthPacking, side }));
     const held: Material[] = [batch, ...depth];
     // Links in parallel: nothing here waits. The materials hold the programs alive
@@ -673,6 +674,8 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     this.director = director;
     this.wardrobe = wardrobe;
     this.fxClockMs = 0;
+    // Worn or taken off while the new body was loading: the old wardrobe heard it, the new one must too.
+    if (oldWardrobe) wardrobe.adoptCommitted(oldWardrobe.committedEntries());
 
     this.applyViewState(figure);
     this.centerModel(false);
@@ -718,13 +721,16 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
       prepareTexture: async (t) => this.renderer.initTexture(t),
       prepareEffects: (f, ownClip) => this.prepareEffects(f, ownClip),
       anisotropy: () => this.anisotropy(),
+      // A figure not yet on stage has nothing to rehearse beside: it is rehearsed whole, dressed.
+      rehearse: (node) => {
+        if (this.figure === figure) this.rehearse([node]);
+      },
       applyAtomically: (change) => {
         // A figure not yet on stage just takes it: it joins the scene already dressed.
         if (this.figure !== figure) {
           this.applyOutfit(figure, change, false);
           return Promise.resolve();
         }
-        for (const piece of change.attach) this.rehearse([piece.node]);
         this.pendingOps.push(() => this.applyOutfit(figure, change, true));
         return this.nextDrawnFrame();
       },
@@ -1528,6 +1534,56 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     await this.wardrobe?.preview(slot, itemId);
   }
 
+  prefetchEquip(pieces: readonly (readonly [SlotId, string])[]): void {
+    this.wardrobe?.prefetch(pieces);
+  }
+
+  warmItems(pieces: readonly (readonly [SlotId, string])[], whole: boolean): void {
+    this.wardrobe?.warm(pieces, whole);
+  }
+
+  /**
+   * Every program the catalogue's items use, linked when the page is idle, so a new item
+   * finds them ready: measured, a program it had to wait for cost it 80 to 120 ms. They stay
+   * for the life of the page, a fixed set.
+   */
+  warmPrograms(): void {
+    if (this.programsWarmed || this.opts.lite || !this.opts.interactable) return;
+    this.programsWarmed = true;
+    const { renderer, camera, scene } = this;
+    const geometry = new BufferGeometry();
+    geometry.setAttribute("position", new BufferAttribute(new Float32Array(9), 3));
+    geometry.setAttribute("normal", new BufferAttribute(new Float32Array(9), 3));
+    geometry.setAttribute("uv", new BufferAttribute(new Float32Array(6), 2));
+    geometry.setAttribute("uv1", new BufferAttribute(new Float32Array(6), 2));
+    geometry.setAttribute("skinIndex", new BufferAttribute(new Uint8Array(12), 4));
+    geometry.setAttribute("skinWeight", new BufferAttribute(new Float32Array(12), 4));
+    const queue = [...CATALOGUE_PROGRAMS];
+    const held: Material[] = (this.warmedPrograms = []);
+    const next = () => {
+      if (this.opts.lite || !this.renderer) return;
+      const row = queue.shift();
+      if (!row) return;
+      const material = new BatchMaterial({ hash: 0, geoset: 0, units: Array.from({ length: row.units }, () => ({ tex: 0, uvSet: 0, wrapS: true, wrapT: true, uvAnim: -1 })), shader: row.shader, blend: row.blend, flags: row.flags, priority: 0, color: -1, opacity: -1 }, true);
+      if (row.blend === 1) material.setShadowCut(whiteTexture());
+      held.push(material);
+      const mesh = new SkinnedMesh(geometry, material);
+      const bone = new Bone();
+      mesh.add(bone);
+      mesh.bind(new Skeleton([bone]));
+      void renderer.compileAsync(mesh, camera, scene).then(idle);
+    };
+    const idle = () => {
+      const ric = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+      if (ric) ric(next, { timeout: 400 });
+      else setTimeout(next, 30);
+    };
+    idle();
+  }
+
+  private programsWarmed = false;
+  private warmedPrograms: Material[] = [];
+
   setSheathed(sheathed: boolean): void {
     this.wardrobe?.setStowed(sheathed);
     this.invalidate();
@@ -1602,16 +1658,20 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     await this.nextDrawnFrame();
   }
 
-  addFigureCell(el: HTMLElement, opts: { bodyId?: string; itemId?: string; setId?: string }): () => void {
+  addFigureCell(el: HTMLElement, opts: Parameters<ViewerEngine["addFigureCell"]>[1]): () => void {
     let removed = false;
     let remove: (() => void) | null = null;
     void this.figureCells().then((cells) => {
-      if (!removed) remove = cells.add(el, { bodyId: opts.bodyId ?? this.figure?.id, itemId: opts.itemId, setId: opts.setId });
+      if (!removed) remove = cells.add(el, { ...opts, bodyId: opts.bodyId ?? this.figure?.id });
     });
     return () => {
       removed = true;
       remove?.();
     };
+  }
+
+  async figurePoster(opts: Parameters<ViewerEngine["figurePoster"]>[0], width: number, height: number): Promise<string | null> {
+    return (await this.figureCells()).posterUrl(opts, width, height);
   }
 
   private figureCells(): Promise<FigureCells> {
@@ -1784,6 +1844,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     running: () => this.running,
     compositeRuns: () => this.composer.runs,
     wardrobeApplied: () => this.wardrobe?.applied ?? 0,
+    packQueue: () => queueState(),
     shadow: () => this.shadowFit,
     shadowMatrix: () => [...this.light.shadow.matrix.elements],
     depth: () => ({ near: this.camera.near, far: this.camera.far }),
@@ -1914,6 +1975,8 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     this.outline?.dispose();
     this.cells?.dispose();
     this.composer?.dispose();
+    for (const m of this.warmedPrograms) m.dispose();
+    this.warmedPrograms = [];
     this.controls?.dispose();
     this.ground?.geometry.dispose();
     (this.ground?.material as ShadowMaterial | undefined)?.dispose();

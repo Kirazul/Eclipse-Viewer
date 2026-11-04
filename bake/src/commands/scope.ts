@@ -1,11 +1,12 @@
 import { paths } from "@eclipse/format";
-import { type BakeContext, type BakeRecord } from "../bake/context";
+import { type BakeContext, type BakeRecord, isUpToDate } from "../bake/context";
 import { bakeBodyUnit } from "../bake/body";
 import { type BodySpec, allBodies, allRaces } from "../chr/races";
 import { type ItemSpec, bakeItemUnit, itemUnitId, specOfItem, specsOfRows } from "../items/bake";
 import { LINE_ORDER, LINES, type LineScope, scanLine } from "../items/lines";
 import { bakeMountUnit } from "../mounts/bake";
 import { type MountFamily, type MountScan, scanMounts } from "../mounts/scan";
+import { posterUnits } from "../posters/bake";
 import { bakeUiUnit } from "../ui/bake";
 
 /** One thing `plan` counts and `run` bakes, with the object that says it is finished. */
@@ -15,6 +16,8 @@ export interface Unit {
   /** Written last, so its presence means the unit finished. */
   output: string;
   bake(ctx: BakeContext): Promise<BakeRecord>;
+  /** Asks instead of the record and baker check: a poster has a stage of its own. */
+  done?(ctx: BakeContext): Promise<boolean>;
 }
 
 const UI_UNIT: Unit = { id: "ui", kind: "ui", output: paths.atlasMap(), bake: bakeUiUnit };
@@ -80,7 +83,8 @@ export function everyNth<T>(list: readonly T[], count: number): T[] {
  * without sharing a disk. A scope is `ui`, a class (bodies, items, mounts), a line
  * (items:midnight, items:warwithin, items:client, items:eclipse), a model id (human-male),
  * retail items (item:231550), a display (display:12345), a mount (mount:1234), a sample
- * (sample:300, sample-mounts:40), `all`, or several of these with commas.
+ * (sample:300, sample-mounts:40), `all`, or several of these with commas. `posters:<scope>`
+ * draws what those baked: see posters/bake.ts.
  */
 export async function expandScope(ctx: BakeContext, scope: string, _planning = false): Promise<Unit[]> {
   const out: Unit[] = [];
@@ -97,6 +101,7 @@ export async function expandScope(ctx: BakeContext, scope: string, _planning = f
 
 async function expandOne(ctx: BakeContext, scope: string): Promise<Unit[]> {
   if (scope === "ui") return [UI_UNIT];
+  if (scope.startsWith("posters:")) return posterUnits(ctx, scope.slice(8));
   if (scope.startsWith("item:")) return [itemUnit(await specOfItem(ctx, Number(scope.slice(5))))];
   if (scope.startsWith("display:")) {
     const display = Number(scope.slice(8));
@@ -142,7 +147,14 @@ export const MEASURED = {
   // Clips and geometry at 7 MB on the wire, plus each body's share of 18,479 customization textures.
   body: { bytes: 16_000_000, writes: 585 },
   ui: { bytes: 1_200_000, writes: 14 },
+  // 85 real posters at 12.1.0.69933: a mount 5.9 KB, an item 7.5 KB by sex, a set 12.1 KB by sex.
+  poster: { bytes: 13_500, writes: 1.7 },
 } as const;
+
+/** Done means what the unit says it means, or a good record and its output. */
+export function unitDone(ctx: BakeContext, u: Unit): Promise<boolean> {
+  return u.done ? u.done(ctx) : isUpToDate(ctx, u.id, u.output);
+}
 
 export function projectUnits(units: readonly Pick<Unit, "kind">[]): { bytes: number; writes: number } {
   let bytes = 0;

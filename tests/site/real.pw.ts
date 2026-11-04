@@ -178,10 +178,10 @@ test.describe("with the real engine and packs", () => {
     await page.locator(".tile:not(.hide)").first().click();
     await page.waitForTimeout(300);
     expect(await coverage(page)).toBeGreaterThan(0.05);
-    await page.locator('[data-grid-mode="figures"]').click();
+    await page.mouse.move(5, 5);
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${OUT}/r_figures.png` });
-    expect(await page.locator(".tile.figure").count()).toBeGreaterThan(3);
+    expect(await page.locator(".tile").count()).toBeGreaterThan(3);
     expect(errors.filter((e) => !e.includes("items/"))).toEqual([]);
   });
 
@@ -212,10 +212,8 @@ test.describe("with the real engine and packs", () => {
     const worn = await page.evaluate(() => (window as unknown as { eclipse: { gpu(): { geometries: number } } }).eclipse.gpu().geometries);
     console.log("real: geometries before/after wearing", before, worn);
     expect(worn).toBeGreaterThanOrEqual(before);
-    await page.locator('[data-grid-mode="figures"]').click();
     await page.waitForTimeout(2500);
     await page.screenshot({ path: `${OUT}/r_item_figures.png` });
-    await page.locator('[data-grid-mode="icons"]').click();
     await page.locator(`[data-ring="${slot}"]`).click({ button: "right" });
     await expect(page.locator(`[data-ring="${slot}"]`)).not.toHaveClass(/worn/);
     expect(errors).toEqual([]);
@@ -226,5 +224,76 @@ test.describe("with the real engine and packs", () => {
     const hrefs = await page.locator('link[rel="modulepreload"]').evaluateAll((e) => e.map((x) => x.getAttribute("href")));
     console.log("real: modulepreload", JSON.stringify(hrefs));
     expect(hrefs.length).toBeGreaterThan(0);
+  });
+
+  test("mounts on the real engine: no poster baked, each card fills, hover goes live, no frame shows neither", async ({ page }) => {
+    const local = ["mountd-17694", "mountd-17696", "mountd-17697", "mountd-114211"].filter((id) => existsSync(`site/public/packs/models/${id}/manifest.json`));
+    test.skip(local.length === 0, "no mount packs baked locally");
+    const rows = local.map((id, i) => ({ id: `m-${i}`, name: `Mount ${id}`, circle: "objects/never.webp", tile: "", mountId: i, flying: false, variants: [{ id, display: Number(id.slice(7)), name: id, icon: "objects/never.webp", mountId: i }] }));
+    await page.route("**/packs/catalog/mounts.json", (r) => r.fulfill({ json: rows }));
+    const icons: string[] = [];
+    page.on("request", (r) => { if (r.url().includes("never.webp")) icons.push(r.url()); });
+    await startCls(page);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto(`${REAL}mounts/`);
+    const cards = page.locator("#mount-grid .tile[data-mount]");
+    await expect(cards).toHaveCount(local.length);
+    // The engine drew each picture, and the page has its one context and nothing running.
+    await expect(page.locator("#mount-grid .tile[data-mount] .tile-poster[data-ok]")).toHaveCount(local.length, { timeout: 60_000 });
+    expect(icons).toEqual([]);
+    const size = await cards.first().locator(".tile-poster").evaluate((i: HTMLImageElement) => [i.naturalWidth, i.naturalHeight]);
+    expect(size).toEqual([400, 528]);
+    await page.screenshot({ path: `${OUT}/r_mounts_filled.png` });
+
+    const samples = await page.evaluate(async () => {
+      const card = document.querySelectorAll<HTMLElement>("#mount-grid .tile[data-mount]")[1]!;
+      const poster = card.querySelector<HTMLElement>(".tile-poster")!;
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas[data-eclipse-cells]")!;
+      const gl = canvas.getContext("webgl2") as WebGL2RenderingContext;
+      const r = card.getBoundingClientRect();
+      const w = Math.round(r.width);
+      const h = Math.round(r.height);
+      const k = canvas.width / canvas.clientWidth;
+      const px = new Uint8Array(4 * Math.ceil(w * k) * Math.ceil(h * k));
+      const log: { live: boolean; opacity: number; solid: number }[] = [];
+      (window as unknown as { __card: HTMLElement }).__card = card;
+      let run = true;
+      const tick = () => {
+        if (!run) return;
+        gl.readPixels(Math.round(r.left * k), canvas.height - Math.round(r.bottom * k), Math.ceil(w * k), Math.ceil(h * k), gl.RGBA, gl.UNSIGNED_BYTE, px);
+        let n = 0;
+        for (let i = 3; i < px.length; i += 16) if (px[i]! > 16) n++;
+        log.push({ live: card.classList.contains("live"), opacity: Number(getComputedStyle(poster).opacity), solid: n });
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      (window as unknown as { __stop: () => typeof log }).__stop = () => {
+        run = false;
+        return log;
+      };
+      return 0;
+    });
+    void samples;
+    await cards.nth(1).hover();
+    await expect(cards.nth(1)).toHaveClass(/live/, { timeout: 30_000 });
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => document.querySelectorAll("canvas").length)).toBe(1);
+    await page.mouse.move(2, 2);
+    await expect(cards.nth(1)).not.toHaveClass(/live/);
+    await page.waitForTimeout(120);
+    const log = await page.evaluate(() => (window as unknown as { __stop: () => { live: boolean; opacity: number; solid: number }[] }).__stop());
+    const firstLive = log.findIndex((f) => f.live);
+    console.log("real mounts: frames", log.length, "live from", firstLive, "solid at first live", log[firstLive]?.solid);
+    expect(firstLive).toBeGreaterThanOrEqual(0);
+    // A frame with the poster gone and the canvas empty would be a flicker.
+    const bare = log.filter((f) => f.opacity < 0.05 && f.solid === 0);
+    expect(bare).toEqual([]);
+    // Back on the poster, and the canvas is clear.
+    const end = log.at(-1)!;
+    expect(end.opacity).toBe(1);
+    expect(end.solid).toBe(0);
+    expect(await cls(page)).toBe(0);
+    expect(errors).toEqual([]);
   });
 });

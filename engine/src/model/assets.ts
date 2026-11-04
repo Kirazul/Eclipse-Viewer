@@ -18,12 +18,15 @@ import {
 } from "@eclipse/format";
 import { fetchBytes, fetchJson, isAbort } from "../net/fetchPack";
 import { parseClip, parseGlb, parseTexture } from "./loaders";
+import { sharedFx, textureStore, type Lease } from "./shared";
 import { defaultClipId, playableClips } from "../logic/clipOrder";
 
 export interface LoadEnv {
   base: string;
   renderer: WebGLRenderer;
   anisotropy(): number;
+  /** Everything fetched in this environment. Absent: high, it is what the visitor is waiting for. */
+  priority?: "high" | "low";
 }
 
 export interface LoadRun {
@@ -33,6 +36,10 @@ export interface LoadRun {
   onExpect?(bytes: number): void;
   /** Lite preview: nothing beyond what the first frame needs. */
   lite?: boolean;
+  /** A wardrobe piece: textures and keyframes held in common with whatever else reads them. */
+  shared?: boolean;
+  /** Its place among the wearables being fetched: fetchPack's `group`. */
+  group?: number;
 }
 
 /** Streamed clips: one fetch per clip, parsed once, shared by everything that asks. */
@@ -123,6 +130,8 @@ export class ModelAssets {
   onTexture: ((index: number) => void) | null = null;
   private readonly variants = new Map<string, Texture>();
   private readonly owned = new Set<Texture>();
+  /** Held in common, let go of rather than freed. */
+  private readonly leases: Lease[] = [];
   private disposed = false;
 
   private constructor(
@@ -139,7 +148,7 @@ export class ModelAssets {
       inlineManifests.get(id) ??
       (await fetchJson<ModelManifest>(packUrl(env.base, paths.manifest(id)), {
         signal: run.signal,
-        priority: "high",
+        priority: env.priority ?? "high",
         onBytes: run.onBytes,
       }));
     if (manifest.formatVersion > FORMAT_VERSION) {
@@ -158,7 +167,7 @@ export class ModelAssets {
   private async fetchAll(run: LoadRun): Promise<void> {
     const { manifest, env } = this;
     const url = (key: string) => packUrl(env.base, key);
-    const high = { signal: run.signal, priority: "high" as const, onBytes: run.onBytes };
+    const high = { signal: run.signal, priority: env.priority ?? ("high" as const), onBytes: run.onBytes, group: run.group, finish: run.shared };
 
     const expect = (n: number) => run.onExpect?.(n);
     expect(manifest.glb.bytes);
@@ -174,7 +183,9 @@ export class ModelAssets {
     let fx: Promise<FxData> | null = null;
     if (manifest.fx) {
       expect(manifest.fx.bytes);
-      fx = fetchJson<FxData>(url(manifest.fx.key), { ...high, expected: manifest.fx.bytes });
+      fx = run.shared
+        ? sharedFx(url(manifest.fx.key), manifest.fx.bytes, run.signal, run.group, env.priority)
+        : fetchJson<FxData>(url(manifest.fx.key), { ...high, expected: manifest.fx.bytes });
     }
 
     const layers = (manifest.composite?.layers ?? []).filter((l) => !!l.key);
@@ -185,18 +196,32 @@ export class ModelAssets {
       this.own(texture);
       this.layers.push({ layer, texture });
     });
+    // A dropped load rejects all of these at once, and the awaits below only reach the first.
+    // The rest are not news: they say so here, and whoever awaits one still hears it.
+    const quiet = () => undefined;
+    clip?.catch(quiet);
+    fx?.catch(quiet);
+    for (const p of layerPromises) p.catch(quiet);
 
     const startTexture = async (index: number): Promise<void> => {
       const entry = manifest.textures[index]!;
       if (!entry.key || this.disposed) return;
       expect(entry.bytes);
-      const bytes = await fetchBytes(url(entry.key), { ...high, expected: entry.bytes });
-      const texture = await parseTexture(env.renderer, bytes, env.anisotropy());
-      if (this.disposed) {
-        texture.dispose();
-        return;
+      let texture: Texture;
+      if (run.shared) {
+        const lease = textureStore(env.renderer).acquire(url(entry.key), entry.bytes, env.anisotropy(), run.group, env.priority);
+        this.leases.push(lease);
+        texture = await lease.texture;
+        if (this.disposed) return;
+      } else {
+        const bytes = await fetchBytes(url(entry.key), { ...high, expected: entry.bytes });
+        texture = await parseTexture(env.renderer, bytes, env.anisotropy());
+        if (this.disposed) {
+          texture.dispose();
+          return;
+        }
+        this.own(texture);
       }
-      this.own(texture);
       this.textures[index] = texture;
       this.onTexture?.(index);
     };
@@ -210,6 +235,7 @@ export class ModelAssets {
       let p = started.get(i);
       if (!p) {
         p = startTexture(i);
+        p.catch(quiet);
         started.set(i, p);
       }
       return p;
@@ -336,6 +362,8 @@ export class ModelAssets {
     for (const t of this.owned) t.dispose();
     this.owned.clear();
     this.variants.clear();
+    for (const l of this.leases) l.release();
+    this.leases.length = 0;
   }
 }
 

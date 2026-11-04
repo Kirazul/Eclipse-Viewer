@@ -3,24 +3,24 @@
  * (UiMorph.cpp), and this is plain DOM rather than a React tree on purpose: it is
  * the one part of the page a pointer sweeps across at full speed.
  *
- * The grid is virtual. Rows live at fixed offsets inside a fixed-height space, so
- * a tile's position is arithmetic, nothing ever measures its neighbours, and
- * thousands of entries cost what the visible rows cost.
+ * The grid is virtual (grid/virtual.ts), of figure cells only: baked posters on retail's
+ * cards, and the one the pointer rests on comes alive, on the body on the stage.
  */
-import { itemOfRow, packUrl, paths, type ItemEntry, type ItemManifest, type ItemShard, type ItemShardRef, type LineInfo, type SetEntry, type SlotId } from "@eclipse/format";
+import { POSTER, itemOfRow, packUrl, paths, posterFor, type ItemEntry, type ItemManifest, type ItemShard, type ItemShardRef, type LineInfo, type SetEntry, type SlotId } from "@eclipse/format";
 import { art, PACK_BASE } from "../base";
+import { FillQueue, type DrawPoster } from "../grid/fill";
+import { CARD, FRAME, fitPage } from "../grid/fit";
+import { LiveCell } from "../grid/live";
+import { Fling, VirtualRows, setImage } from "../grid/virtual";
 import { hideTip, showTip } from "../tip";
-import { ARMOR_SLOTS, SLOT_LABEL, emptySprite } from "../slots";
+import { ARMOR_SLOTS, SLOT_LABEL } from "../slots";
 import { release, setSlot, wear, wearSet } from "./actions";
-import { hover } from "./hover";
-import { $body, $catalogState, $engine, $gridMode, $items, $mounts, $sets, $slot, $tab, $worn } from "./state";
+import { hover, onStageFree, stageBusy, stageLanded } from "./hover";
+import { $loading } from "@eclipse/engine/stores";
+import { $body, $catalogState, $engine, $items, $mounts, $sets, $slot, $tab, $worn } from "./state";
 
-// UiMorph.cpp: kBoard, kBoardPad. Figures: fig::kCellUnitsW/H at 1.33 px per unit.
-const BOARD = 76;
-const BOARD_PAD = 10;
-const FIG_W = 104;
-const FIG_H = 138;
-const FIG_SET_SCALE = 1.2;
+/** A set's name stands under its card, two lines of it, and nothing below ever moves. */
+const SET_LABEL = 38;
 
 type Cell =
   | { kind: "hide"; slot: SlotId }
@@ -29,20 +29,15 @@ type Cell =
 
 interface TileEl extends HTMLButtonElement {
   cell?: Cell;
-  dropFigure?: () => void;
-  ico: HTMLElement;
-  img: HTMLImageElement;
+  poster: HTMLImageElement;
   label: HTMLElement;
-  extra: HTMLElement;
 }
 interface RowEl extends HTMLDivElement {
   tiles: TileEl[];
-  rowIndex: number;
 }
 
 const EYE_OFF = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m5.6 18.4 12.8-12.8"/></svg>`;
 const STAR = `<svg viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-linejoin="round"><path d="m12 3 2.8 5.8 6.2.9-4.5 4.4 1 6.3L12 17.5l-5.5 3 1-6.3L3 9.7l6.2-.9z"/></svg>`;
-const SET_GLYPH = `<svg viewBox="0 0 26 22" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="24" height="5.5" rx="1.5"/><rect x="1" y="8.25" width="24" height="5.5" rx="1.5"/><rect x="1" y="15.5" width="24" height="5.5" rx="1.5"/></svg>`;
 
 const scroller = document.getElementById("grid-scroll") as HTMLElement;
 const space = document.getElementById("grid-space") as HTMLElement;
@@ -193,41 +188,38 @@ function computeCells(): { cells: Cell[]; count: number } {
 
 // --- The virtual grid ---------------------------------------------------------
 let cells: Cell[] = [];
-let tileW = BOARD;
-let tileH = BOARD;
-let pad = BOARD_PAD;
-let pitch = BOARD + BOARD_PAD;
 let perRow = 1;
-let rowCount = 0;
-const active = new Map<number, RowEl>();
-const pool: RowEl[] = [];
-let overscan = 1;
-const iconSet = () => $tab.get() === "sets";
+const setsTab = () => $tab.get() === "sets";
+
+const LIVE_AFTER_STAGE_MS = 400;
+/** The cell the pointer rests on comes alive on this body, in the engine's one cell context. */
+const live = new LiveCell(async () => {
+  // The stage has the same things to load, and it comes first. The cell's first frame costs
+  // half a second of the main thread (a second GL context, its own body), measured, so it
+  // waits until the pointer has plainly stopped: a hover on the way past never pays for it.
+  await stageLanded();
+  await new Promise((r) => setTimeout(r, LIVE_AFTER_STAGE_MS));
+  const engine = $engine.get();
+  return engine?.addFigureCell ? engine.addFigureCell.bind(engine) : null;
+});
+/** A card with no baked poster yet: the engine draws the same picture, a few at a time, after the stage's own load. */
+const fill = new FillQueue((): DrawPoster | null => {
+  const engine = $engine.get();
+  if ($loading.get() || stageBusy()) return null;
+  return engine?.figurePoster ? (spec, w, h) => engine.figurePoster(spec as never, w, h) : null;
+}, 1);
+const fling = new Fling(() => {
+  for (const r of rows.rows()) for (const t of r.tiles) if (t.cell) bindPoster(t, t.cell);
+});
 
 function newTile(): TileEl {
   const t = document.createElement("button") as TileEl;
   t.type = "button";
   t.className = "tile";
-  t.innerHTML = `<span class="tile-plate"></span><span class="tile-ico"><img alt="" width="62" height="62" decoding="async" draggable="false"></span><span class="tile-x"></span><span class="tile-name"></span><span class="tile-frame"></span><span class="tile-flash"></span><span class="tile-star" data-star>${STAR}</span>`;
-  t.ico = t.children[1] as HTMLElement;
-  t.img = t.ico.firstChild as HTMLImageElement;
-  t.extra = t.children[2] as HTMLElement;
-  t.label = t.children[3] as HTMLElement;
+  t.innerHTML = `<span class="tile-plate"></span><img class="tile-poster" alt="" decoding="async" draggable="false" hidden><span class="tile-ring"></span><span class="tile-hide">${EYE_OFF}</span><span class="tile-name"></span><span class="tile-frame"></span><span class="tile-flash"></span><span class="tile-star" data-star>${STAR}</span>`;
+  t.poster = t.children[1] as HTMLImageElement;
+  t.label = t.children[4] as HTMLElement;
   return t;
-}
-
-function setArt(t: TileEl, url: string) {
-  const img = t.img;
-  if (!url) {
-    t.ico.hidden = true;
-    img.removeAttribute("src");
-    return;
-  }
-  t.ico.hidden = false;
-  if (img.getAttribute("src") === url) return;
-  img.removeAttribute("data-ok");
-  img.src = url;
-  if (img.complete && img.naturalWidth) img.dataset.ok = "1";
 }
 
 function isWorn(cell: Cell): boolean {
@@ -238,100 +230,93 @@ function isWorn(cell: Cell): boolean {
   return pieces.length > 0 && pieces.every(([s, id]) => worn[s as SlotId] === id);
 }
 
+/** The baked poster for this body, or the same picture drawn here. Until it lands: the empty card, its quiet ring. */
+function bindPoster(t: TileEl, cell: Cell) {
+  fill.drop(t);
+  t.classList.remove("no-picture");
+  if (cell.kind === "hide") {
+    setImage(t.poster, "");
+    return;
+  }
+  const entry = cell.kind === "item" ? cell.item : cell.set;
+  const bodyId = $body.get();
+  const key = posterFor(entry, bodyId);
+  const poster = key ? art(key) : "";
+  // On the way past in a fling, a picture already there stays and a new one waits.
+  if (fling.active) {
+    if (t.poster.getAttribute("src") !== poster) setImage(t.poster, "");
+    return;
+  }
+  if (poster) setImage(t.poster, poster);
+  else drawPoster(t, cell, entry.id, bodyId);
+}
+
+function drawPoster(t: TileEl, cell: Exclude<Cell, { kind: "hide" }>, id: string, bodyId: string) {
+  setImage(t.poster, "");
+  const size = cell.kind === "set" ? POSTER.set : POSTER.cell;
+  const spec = cell.kind === "item" ? { bodyId, itemId: cell.item.id } : { bodyId, pieces: cell.set.pieces };
+  fill.ask(t, `${id}@${bodyId}`, spec, size.width, size.height, (url) => {
+    if (t.cell !== cell) return;
+    if (url) setImage(t.poster, url);
+    else t.classList.add("no-picture");
+  });
+}
+
 function bind(t: TileEl, cell: Cell | undefined) {
-  t.dropFigure?.();
-  t.dropFigure = undefined;
+  live.leaveIf(t);
+  fill.drop(t);
   t.cell = cell;
   if (!cell) {
     t.style.visibility = "hidden";
+    setImage(t.poster, "");
     return;
   }
   t.style.visibility = "";
-  const figures = $gridMode.get() === "figures";
   let cls = "tile";
-  t.extra.className = "tile-x";
-  t.extra.innerHTML = "";
-  t.extra.style.backgroundImage = "";
   t.label.textContent = "";
   if (cell.kind === "hide") {
     cls += " hide";
-    setArt(t, "");
-    t.extra.className = "tile-hide";
-    t.extra.innerHTML = EYE_OFF;
     t.label.textContent = "Hide";
+    t.setAttribute("aria-label", "Hide");
   } else if (cell.kind === "item") {
-    if (figures) cls += " figure";
     if (stars.has(cell.item.id)) cls += " fav";
-    setArt(t, figures ? "" : cell.item.icon ? art(cell.item.icon) : "");
-    if (!figures && !cell.item.icon) {
-      t.extra.className = "tile-glyph";
-      t.extra.style.backgroundImage = `var(--sp-${emptySprite(cell.item.slot)})`;
-      t.label.textContent = cell.item.name;
-    }
+    t.setAttribute("aria-label", cell.item.name);
   } else {
     cls += " set";
-    if (figures) cls += " figure";
-    setArt(t, "");
     t.label.textContent = cell.set.name;
-    if (!figures) paintSetIcons(t, cell.set);
-  }
-  if (figures && cell.kind !== "hide") {
-    t.extra.className = "tile-load spin";
-    addFigure(t, cell);
+    t.setAttribute("aria-label", cell.set.name);
   }
   if (isWorn(cell)) cls += " worn";
   t.className = cls;
+  bindPoster(t, cell);
 }
 
 const itemsById = new Map<string, ItemEntry>();
 
-function paintSetIcons(t: TileEl, set: SetEntry) {
-  const icons = (set.icons ? Object.values(set.icons) : Object.values(set.pieces).map((id) => itemsById.get(id ?? "")?.icon)).filter(Boolean).slice(0, 9) as string[];
-  if (!icons.length) {
-    t.extra.className = "tile-setglyph";
-    t.extra.innerHTML = SET_GLYPH;
-    return;
-  }
-  t.extra.className = "tile-pieces";
-  t.extra.style.setProperty("--cols", icons.length <= 4 ? "2" : "3");
-  t.extra.innerHTML = icons.map((k) => `<img src="${art(k)}" alt="" decoding="async" draggable="false">`).join("");
-}
-
-function addFigure(t: TileEl, cell: Exclude<Cell, { kind: "hide" }>) {
-  const engine = $engine.get();
-  if (!engine?.addFigureCell) return;
-  const bodyId = $body.get();
-  t.dropFigure = engine.addFigureCell(t, cell.kind === "item" ? { bodyId, itemId: cell.item.id } : { bodyId, setId: cell.set.id });
-}
-
-function newRow(): RowEl {
-  const r = document.createElement("div") as RowEl;
-  r.className = "grid-row";
-  r.tiles = [];
-  space.appendChild(r);
-  return r;
-}
-
-function bindRow(r: RowEl, index: number) {
-  r.rowIndex = index;
-  while (r.tiles.length < perRow) {
-    const t = newTile();
-    r.tiles.push(t);
-    r.appendChild(t);
-  }
-  for (let i = 0; i < r.tiles.length; i++) {
-    const t = r.tiles[i]!;
-    t.hidden = i >= perRow;
-    bind(t, i < perRow ? cells[index * perRow + i] : undefined);
-  }
-  r.style.transform = `translateY(${index * pitch}px)`;
-  r.hidden = false;
-}
-
-function unbindRow(r: RowEl) {
-  for (const t of r.tiles) bind(t, undefined);
-  r.hidden = true;
-}
+const rows = new VirtualRows<RowEl>(
+  () => {
+    const r = document.createElement("div") as RowEl;
+    r.className = "grid-row";
+    r.tiles = [];
+    space.appendChild(r);
+    return r;
+  },
+  (r, index) => {
+    while (r.tiles.length < perRow) {
+      const t = newTile();
+      r.tiles.push(t);
+      r.appendChild(t);
+    }
+    for (let i = 0; i < r.tiles.length; i++) {
+      const t = r.tiles[i]!;
+      t.hidden = i >= perRow;
+      bind(t, i < perRow ? cells[index * perRow + i] : undefined);
+    }
+  },
+  (r) => {
+    for (const t of r.tiles) bind(t, undefined);
+  },
+);
 
 // On a phone the whole column scrolls under the sticky room, so the grid has no
 // scroller of its own: it reads its place in the outer one.
@@ -344,22 +329,11 @@ function viewport() {
 }
 
 function paint() {
+  clearTimeout(warmTimer);
+  warmTimer = window.setTimeout(warmPage, 400);
   const { top, view } = viewport();
-  const first = Math.max(0, Math.floor(top / pitch) - overscan);
-  const last = Math.min(rowCount - 1, Math.floor((top + view) / pitch) + overscan);
-  for (const [i, r] of active) {
-    if (i < first || i > last) {
-      unbindRow(r);
-      pool.push(r);
-      active.delete(i);
-    }
-  }
-  for (let i = first; i <= last; i++) {
-    if (active.has(i)) continue;
-    const r = pool.pop() ?? newRow();
-    bindRow(r, i);
-    active.set(i, r);
-  }
+  fling.moved(top, view);
+  rows.paint(top, view);
   if (phone.matches) return;
   const max = scroller.scrollHeight - view;
   fadeTop.classList.toggle("show", top > 1);
@@ -369,34 +343,41 @@ function paint() {
 function layout() {
   const width = scroller.clientWidth;
   if (!width) return;
-  const figures = $gridMode.get() === "figures";
-  const scale = figures && iconSet() ? FIG_SET_SCALE : 1;
-  tileW = figures ? Math.round(FIG_W * scale) : BOARD;
-  tileH = figures ? Math.round(FIG_H * scale) : BOARD;
-  pad = BOARD_PAD;
-  pitch = tileH + pad;
-  overscan = figures ? 0 : 1;
-  perRow = Math.max(1, Math.floor((width + pad) / (tileW + pad)));
-  rowCount = Math.ceil(cells.length / perRow);
-  space.style.setProperty("--tile-w", `${tileW}px`);
-  space.style.setProperty("--tile-h", `${tileH}px`);
-  space.style.setProperty("--tile-gap", `${pad}px`);
-  space.style.height = `${Math.max(0, rowCount * pitch - pad)}px`;
+  const sets = setsTab();
+  const k = sets ? CARD.setScale : 1;
+  const frame = sets ? FRAME.set : FRAME.card;
+  const label = sets ? SET_LABEL : 0;
+  // A set is a whole figure with its name under it: two rows of them read better than three of slivers.
+  const maxRows = sets ? CARD.setRows : CARD.rows;
+  // A phone's column scrolls in the page, so what a page of cards fills is the room left under the stage.
+  const height = phone.matches ? Math.max(360, innerHeight * 0.6) : scroller.clientHeight;
+  const fit = (w: number, h: number) => fitPage(w, Math.max(1, h - maxRows * label), CARD.w * k, CARD.h * k, CARD.gap * k, CARD.maxCells, maxRows);
+  // A card's frame reaches past the card, and the scroller's edge would cut it off the first row.
+  const over = Math.ceil(fit(width, height).cellW * frame.over);
+  const page = fit(width - over * 2, height - over * 2);
+  perRow = Math.max(1, page.cols);
+  rows.pitch = page.cellH + label + page.gap;
+  rows.offset = over;
+  rows.overscan = 1;
+  rows.rowCount = Math.ceil(cells.length / perRow);
+  space.style.setProperty("--tile-w", `${page.cellW}px`);
+  space.style.setProperty("--tile-h", `${page.cellH}px`);
+  space.style.setProperty("--tile-gap", `${page.gap}px`);
+  space.style.setProperty("--row-x", `${Math.floor((width - page.width) / 2)}px`);
+  space.style.setProperty("--frame-over", `${page.cellW * frame.over}px`);
+  space.style.setProperty("--frame-slice", `${page.cellW * frame.slice}px`);
+  space.style.height = `${rows.height(page.gap)}px`;
 }
 
 function rebuildAll() {
-  for (const [, r] of active) {
-    unbindRow(r);
-    pool.push(r);
-  }
-  active.clear();
+  rows.reset();
   layout();
   paint();
 }
 
 function setEmptyState() {
   const state = $catalogState.get();
-  const sets = iconSet();
+  const sets = setsTab();
   const hasCatalogue = shardMode() ? lineInfo.length > 0 : sets ? $sets.get().length > 0 : $items.get().length > 0;
   const onlyHide = sets ? cells.length === 0 : cells.length <= 1;
   let title = "";
@@ -446,11 +427,18 @@ export function refresh(keepScroll = false) {
 }
 
 function refreshWorn() {
-  for (const [, r] of active) {
+  for (const r of rows.rows()) {
     for (const t of r.tiles) {
       if (t.cell) t.classList.toggle("worn", isWorn(t.cell));
     }
   }
+}
+
+/** Live on a resting pointer, on whatever body is on the stage now: the poster was only a preview. */
+function liveFor(t: TileEl, cell: Cell) {
+  if (cell.kind === "hide") return live.leave();
+  const bodyId = $body.get();
+  live.enter(t, cell.kind === "item" ? { bodyId, itemId: cell.item.id } : { bodyId, setId: cell.set.id });
 }
 
 // --- Pointer: hover tries on, click wears --------------------------------------
@@ -464,6 +452,41 @@ function hoverCell(cell: Cell | undefined) {
     if (pieces.length) hover({ key: `s:${cell.set.id}`, pieces, focus: null });
     else hover(null);
   } else hover(null);
+  warmAround(cell);
+}
+
+const piecesOf = (c: Cell | undefined): [SlotId, string][] =>
+  !c || c.kind === "hide" ? [] : c.kind === "item" ? [[wornSlot(c.item), c.item.id]] : (Object.entries(c.set.pieces) as [SlotId, string][]);
+
+/**
+ * Where the pointer goes next is most likely beside where it is. An item's neighbours come
+ * whole, so moving there shows them on the rest; a set is many items, so only the ones either
+ * side and only their manifests, which is the first round trip a hover would wait for.
+ */
+function warmAround(cell: Cell) {
+  const engine = $engine.get();
+  if (!engine?.warmItems || (navigator as { connection?: { saveData?: boolean } }).connection?.saveData) return;
+  const at = cells.indexOf(cell);
+  if (at < 0) return;
+  const near = cell.kind === "set" ? [at - 1, at + 1] : [at - 1, at + 1, at - perRow, at + perRow];
+  const pieces = near.flatMap((i) => piecesOf(cells[i]));
+  engine.warmItems(pieces, cell.kind !== "set");
+  // The stage has what it wanted and the pointer stays: there is time for the sets beside it, whole.
+  afterLanding = cell.kind === "set" ? () => engine.warmItems(pieces, true) : null;
+}
+let afterLanding: (() => void) | null = null;
+
+let warmedPage = "";
+let warmTimer = 0;
+/** A page has settled, where there is a pointer: its manifests, so any first hover has one round trip less. */
+function warmPage() {
+  const engine = $engine.get();
+  if (!engine?.warmItems || !matchMedia("(hover: hover)").matches || setsTab() || (navigator as { connection?: { saveData?: boolean } }).connection?.saveData) return;
+  const shown = [...rows.rows()].flatMap((r) => r.tiles).filter((t) => t.cell?.kind === "item").map((t) => t.cell!);
+  const key = shown.map((c) => (c as { item: ItemEntry }).item.id).join();
+  if (key === warmedPage) return;
+  warmedPage = key;
+  engine.warmItems(shown.flatMap(piecesOf).slice(0, 36), false);
 }
 
 function tipFor(cell: Cell) {
@@ -479,9 +502,11 @@ space.addEventListener("pointerover", (e) => {
   if (!t?.cell) {
     hover(null);
     hideTip();
+    live.leave();
     return;
   }
   hoverCell(t.cell);
+  liveFor(t, t.cell);
   if ((e.target as Element).closest("[data-star]")) {
     showTip(stars.has((t.cell as { item: ItemEntry }).item?.id ?? "") ? "Starred" : "Star this", "It sorts to the front.");
   } else tipFor(t.cell);
@@ -489,6 +514,7 @@ space.addEventListener("pointerover", (e) => {
 scroller.addEventListener("pointerleave", () => {
   hover(null);
   hideTip();
+  live.leave();
 });
 space.addEventListener("click", (e) => {
   const t = tileOf(e);
@@ -511,10 +537,18 @@ space.addEventListener("click", (e) => {
   void t.offsetWidth;
   t.classList.add("saved");
 });
-// The icon arrives when it arrives: it fades in over a plate of fixed size, never pops.
+// A picture arrives when it arrives: it fades in over a plate of fixed size, never pops.
 space.addEventListener("load", (e) => {
   const img = e.target as HTMLImageElement;
   if (img.tagName === "IMG") img.dataset.ok = "1";
+}, true);
+// A poster that won't load: the page draws the same picture.
+space.addEventListener("error", (e) => {
+  const img = e.target as HTMLImageElement;
+  const t = img.closest?.(".tile") as TileEl | null;
+  const cell = t?.cell;
+  if (!t || !cell || img !== t.poster || cell.kind === "hide") return;
+  drawPoster(t, cell, cell.kind === "item" ? cell.item.id : cell.set.id, $body.get());
 }, true);
 
 let scrollQueued = false;
@@ -579,19 +613,9 @@ linesEl.addEventListener("click", (e) => {
   paintChips();
   refresh();
 });
-document.getElementById("room")!.addEventListener("click", (e) => {
-  const b = (e.target as Element).closest<HTMLElement>("[data-grid-mode]");
-  if (!b) return;
-  const mode = b.dataset.gridMode as "icons" | "figures";
-  $gridMode.set(mode);
-  try { localStorage.setItem("grid-mode", mode); } catch { /* private window */ }
-  for (const m of document.querySelectorAll<HTMLElement>("[data-grid-mode]")) m.classList.toggle("on", m === b);
-  refresh();
-});
-
 function paintLines() {
   if (shardMode()) {
-    const sets = iconSet();
+    const sets = setsTab();
     const shown = lineInfo.filter((l) => (sets ? l.sets : l.items) > 0);
     if (!shown.some((l) => l.id === line)) line = shown[0]?.id ?? "";
     linesEl.innerHTML = shown.map((l) => `<button class="pill sm${line === l.id ? " on" : ""}" type="button" data-line="${l.id}">${l.title} (${(sets ? l.sets : l.items).toLocaleString("en-US")})</button>`).join("");
@@ -599,7 +623,7 @@ function paintLines() {
     return;
   }
   const counts = new Map<string, number>();
-  const list: { line?: string }[] = iconSet() ? $sets.get() : $items.get();
+  const list: { line?: string }[] = setsTab() ? $sets.get() : $items.get();
   for (const e of list) if (e.line) counts.set(e.line, (counts.get(e.line) ?? 0) + 1);
   const label = (id: string) => id.replace(/(^|-|_)(\w)/g, (_, s, c) => (s ? " " : "") + c.toUpperCase()).replace("Warwithin", "War Within");
   const pills = [
@@ -743,19 +767,25 @@ export function startBrowser() {
     materials.clear();
     for (const c of facetsEl.querySelectorAll<HTMLElement>("[data-armor]")) c.classList.remove("on");
     paintFacets();
-    if (!iconSet() || !shardMode()) refresh();
+    if (!setsTab() || !shardMode()) refresh();
   });
   $tab.listen(() => {
     paintLines();
     requestAnimationFrame(() => refresh());
   });
   $worn.listen(refreshWorn);
-  // What a body cannot wear is hidden on that body.
-  $body.listen(() => { if (shardMode()) refresh(true); });
+  // What a body cannot wear is hidden on that body, and its posters are that body's sex.
+  $body.listen(() => refresh(true));
+  // The engine draws what isn't baked, once it is here and the stage has what it came for.
+  $engine.listen(() => setTimeout(() => fill.pump(), 0));
+  $loading.listen((on) => { if (!on) fill.pump(); });
+  onStageFree(() => {
+    fill.pump();
+    afterLanding?.();
+    afterLanding = null;
+  });
   $catalogState.listen(() => {
     paintLines();
     refresh();
   });
-  // A figure cell asks the engine, which may arrive after the first paint of the grid.
-  $engine.listen(() => { if ($gridMode.get() === "figures") refresh(true); });
 }

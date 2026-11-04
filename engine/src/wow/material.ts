@@ -29,7 +29,7 @@ import {
   type Texture,
 } from "three";
 import type { SubmeshExtras } from "@eclipse/format";
-import { ALPHA_KEY, LIGHTING } from "../constants";
+import { ALPHA_KEY, EDGE_FADE, LIGHTING } from "../constants";
 import { COMBINER_GLSL, batchProgram, blendState, type BlendFactor, type BlendState } from "./programs";
 
 const FACTORS: Record<BlendFactor, BlendingSrcFactor & BlendingDstFactor> = {
@@ -180,7 +180,8 @@ export class BatchMaterial extends ShaderMaterial {
   /** The user's transparency toggle sits over retail's own state. */
   userTransparent = false;
 
-  constructor(readonly extras: SubmeshExtras) {
+  /** `twoUvSets`: the geometry has TEXCOORD_1. */
+  constructor(readonly extras: SubmeshExtras, twoUvSets = false) {
     const program = batchProgram(extras.units.length, extras.shader);
     let fragmentShader = fragmentCache.get(program.combiner);
     if (!fragmentShader) {
@@ -195,7 +196,7 @@ export class BatchMaterial extends ShaderMaterial {
       uUv0: { value: new Matrix3() },
       uUv1: { value: new Matrix3() },
       uUvSrc: { value: new Vector3(...program.uvSources) },
-      uEdge: { value: new Vector4(1, 0, 1, 0) },
+      uEdge: { value: new Vector4(EDGE_FADE[0], EDGE_FADE[1], EDGE_FADE[2], program.edgeFade ? 1 : 0) },
       uColor: { value: new Vector3(1, 1, 1) },
       uAlpha: { value: 1 },
       uWeight: { value: new Vector3(1, 1, 1) },
@@ -211,6 +212,9 @@ export class BatchMaterial extends ShaderMaterial {
       vertexShader: VERT,
       fragmentShader,
       uniforms: uniforms as unknown as ShaderMaterial["uniforms"],
+      // three only declares `uv1` for a built-in map on channel 1, and this material has none:
+      // said here, or every unit on UV set 2 reads set 1 and a flame's mask covers nothing.
+      ...(twoUvSets ? { defines: { USE_UV1: "" } } : {}),
       side: extras.flags & 4 ? DoubleSide : FrontSide,
       name: `batch-${extras.hash}`,
     });

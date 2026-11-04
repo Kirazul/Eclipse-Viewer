@@ -10,11 +10,11 @@ import type { SlotId } from "@eclipse/format";
 import { PACK_BASE, art, sprite } from "../base";
 import { loadUiAtlas } from "../sprites";
 import { startMountStage } from "./mountstage";
-import { SLOT_LABEL } from "../slots";
+import { ALL_SLOTS, SLOT_LABEL } from "../slots";
 import { release, resetLook, setSlot, setTab, wear, wearSet } from "./actions";
 import { itemInfo, loadCatalog, startBrowser, tryLink } from "./browser";
 import { attachScrub } from "./scrub";
-import { $body, $catalogState, $engine, $gridMode, $items, $lookText, $races, $scene, $slot, $tab, $worn, type RoomRace, type Tab } from "./state";
+import { $body, $catalogState, $engine, $items, $lookText, $races, $scene, $slot, $tab, $worn, type RoomRace, type Tab } from "./state";
 import { $loaded, $pickedMounts } from "../share/state";
 import { readUrl, startUrlSync } from "./url";
 
@@ -36,7 +36,6 @@ if (url.slot) $slot.set(url.slot);
 $worn.set(url.look);
 $lookText.set(url.choices);
 if (url.scene) $scene.set(url.scene);
-try { if (localStorage.getItem("grid-mode") === "figures") $gridMode.set("figures"); } catch { /* private window */ }
 
 // --- The retail sprites -------------------------------------------------------
 // One atlas, one read per visitor. Until it is cut the frames are the CSS-drawn ones.
@@ -48,7 +47,8 @@ let firstClip: string | null = null;
 async function applyLook() {
   const engine = $engine.get();
   if (!engine) return;
-  await Promise.all(Object.entries($worn.get()).map(([slot, id]) => engine.equip(slot as SlotId, id ?? null)));
+  const worn = $worn.get();
+  await Promise.all(ALL_SLOTS.map((slot) => engine.equip(slot, worn[slot] ?? null)));
   if (url.clip && url.clip !== $currentClip.get()) await engine.playAnimationByName(url.clip);
 }
 
@@ -67,6 +67,7 @@ async function loadBody(id: string) {
   }
   // A link's look is worn before the body joins the stage, so it never shows another first.
   await engine.loadModel(id, $lookText.get() || undefined);
+  engine.warmPrograms();
   if (!firstClip) firstClip = $currentClip.get();
   await applyLook();
 }

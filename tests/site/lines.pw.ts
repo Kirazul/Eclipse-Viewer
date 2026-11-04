@@ -104,7 +104,7 @@ test.describe("items on the real packs", () => {
     expect(errors).toEqual([]);
   });
 
-  test("rows have real names, real icons, and the grid loads one shard at a time", async ({ page }) => {
+  test("rows have real names, a picture and no icon, and the grid loads one shard at a time", async ({ page }) => {
     const shards: string[] = [];
     page.on("request", (r) => {
       if (r.url().includes("/catalog/items/")) shards.push(r.url().split("/catalog/items/")[1]!);
@@ -118,10 +118,10 @@ test.describe("items on the real packs", () => {
     await expect(tile).toBeVisible();
     await tile.hover();
     await expect(page.locator(".tip").first()).not.toContainText(/^Item /);
-    const img = tile.locator(".tile-ico img");
-    await expect(img).toHaveJSProperty("complete", true);
-    expect(await img.evaluate((i: HTMLImageElement) => i.naturalWidth)).toBeGreaterThan(0);
-    expect(await img.getAttribute("src")).toMatch(/objects\/[0-9a-f]{32}\.webp$/);
+    // Baked, or drawn here by the engine until it is: the card ends up with a picture of the thing.
+    await expect(tile.locator(".tile-poster[data-ok]")).toBeVisible({ timeout: 30_000 });
+    expect(await tile.locator(".tile-poster").evaluate((i: HTMLImageElement) => i.naturalWidth)).toBeGreaterThan(0);
+    await expect(page.locator(".tile-ico")).toHaveCount(0);
     // Every other line's shards stayed on the server.
     expect(shards.filter((s) => !s.startsWith(line)).length).toBeLessThanOrEqual(1);
   });
@@ -137,7 +137,7 @@ test.describe("items on the real packs", () => {
     const errors = await open(page, "wardrobe/?body=human-male&tab=sets");
     const pills = page.locator("#lines [data-line]");
     await expect(pills.first()).toBeVisible();
-    const card = page.locator(".tile.set", { hasText: /./ }).first();
+    const card = page.locator(".tile.set").first();
     await expect(card).toBeVisible();
     const before = await eclipse(page, (e) => e.internals.wardrobeApplied());
     await card.hover();
@@ -166,6 +166,13 @@ test.describe("what a first visit reads", () => {
     page.on("request", (r) => {
       if (r.url().includes("/packs/")) reads.push(r.url().split("/packs/")[1]!);
     });
+    // The site as a bake leaves it: every row has its poster, so no card draws its own.
+    await page.route("**/packs/catalog/items/*.json", async (r) => {
+      const shard = (await (await r.fetch()).json()) as { rows: unknown[][] };
+      shard.rows = shard.rows.map((row) => [row[0], row[1], row[2], row[3], row[4], row[5] ?? null, "0123456789abcdef"]);
+      await r.fulfill({ json: shard });
+    });
+    await page.route("**/packs/objects/0123456789abcdef.webp", (r) => r.fulfill({ body: Buffer.from("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA", "base64"), contentType: "image/webp" }));
     await open(page, "wardrobe/?body=human-male");
     await page.waitForTimeout(1500);
     const kinds: Record<string, number> = {};
@@ -272,18 +279,18 @@ test.describe("mounts", () => {
   test.skip((catalog.mountCount ?? 0) === 0, "no mounts baked");
   test.use({ viewport: { width: 1400, height: 860 } });
 
-  test("the page is a circle grid, and a circle opens the stage at full width", async ({ page }) => {
+  test("the page is a grid of cards, and a card opens the stage at full width", async ({ page }) => {
     const errors: string[] = [];
     // Chromium's own word about a view transition across the click: not an error of ours.
     page.on("pageerror", (e) => {
       if (!e.message.includes("ViewTransition")) errors.push(e.message);
     });
     await page.goto(`${REAL}mounts/`);
-    const circle = page.locator("#mount-grid a.circle-link").first();
-    await expect(circle).toBeVisible();
+    const card = page.locator("#mount-grid a.tile").first();
+    await expect(card).toBeVisible();
     expect(await page.locator("#mount-count").textContent()).toMatch(/\d/);
     await page.screenshot({ path: `${OUT}/mounts-grid.png` });
-    await circle.click();
+    await card.click();
     await page.waitForURL(/mounts\/view/);
     await page.waitForFunction(() => (window as unknown as { eclipse?: { frames(): number } }).eclipse?.frames?.() > 2, undefined, { timeout: 60_000 });
     const stage = (await page.locator("#stage").boundingBox())!;

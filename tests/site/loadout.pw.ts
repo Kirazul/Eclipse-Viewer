@@ -43,6 +43,13 @@ const equipped = async (page: Page) => {
   return out;
 };
 
+/** A phone's grid lies under the stage, and a virtual grid has only the rows in view. */
+async function toGrid(page: Page) {
+  if ((page.viewportSize()?.width ?? 0) >= 768) return;
+  await page.locator("#grid-space").evaluate((e) => e.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(120);
+}
+
 test.describe("the Loadout tab", () => {
   test("Eclipse's words, in Eclipse's order", async ({ page }) => {
     const errors = watchErrors(page);
@@ -127,7 +134,8 @@ test.describe("the Loadout tab", () => {
     await page.locator(".lo-row").first().click();
     // The ring opens the Items tab on that slot: wear another helm, come back.
     await page.locator('[data-ring="head"]').click();
-    await page.locator(".tile:not(.hide)").filter({ hasText: /head 3$/ }).first().click();
+    await toGrid(page);
+    await page.locator('.tile[aria-label$="head 3"]').first().click();
     await page.locator('[data-tab-btn="loadout"]').click();
     await page.getByTestId("lo-share").click();
     await expect.poll(() => clipboard(page).then((c) => base64Decode(c.slice(5)))).toBe(everything.text.replace("slot 0 11", "slot 0 231001"));
@@ -183,7 +191,8 @@ test.describe("the Loadout tab", () => {
     await page.getByTestId("lo-share").click();
     await expect.poll(() => clipboard(page)).toBe(only);
     await page.locator('[data-ring="head"]').click();
-    await page.locator(".tile:not(.hide):visible").filter({ hasText: /head 3$/ }).first().click();
+    await toGrid(page);
+    await page.locator('.tile[aria-label$="head 3"]:visible').first().click();
     await page.locator('[data-tab-btn="loadout"]').click();
     await page.getByTestId("lo-share").click();
     await expect.poll(() => clipboard(page).then((c) => base64Decode(c.slice(5)))).toBe("slot 0 231001\nlook 4 1 0 0 0 0 0\nrlook nightelf f 1:11\n");
@@ -287,6 +296,7 @@ test.describe("the Loadout tab", () => {
     await page.locator(".lo-row").first().click();
     await page.locator('[data-tab-btn="items"]').click();
     await page.locator('[data-ring="chest"]').click();
+    await toGrid(page);
     await page.locator(".tile:not(.hide):visible").nth(1).click();
     await page.locator('[data-tab-btn="loadout"]').click();
     await clearCalls(page);

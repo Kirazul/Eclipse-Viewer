@@ -1,19 +1,26 @@
 ---
 import Shell from "../../layouts/Shell.astro";
 ---
-<Shell title="Mounts" subtitle="Every mount, in 3D, in every colour the game gives it." nav="mounts">
-  <div class="mount-tools">
-    <div class="search">
-      <input class="field" id="mount-q" type="search" placeholder="Search mounts" aria-label="Search mounts" autocomplete="off" spellcheck="false" maxlength="40" />
+<Shell title="Mounts" subtitle="Every mount, in 3D, in every colour the game gives it." nav="mounts" fit>
+  <div class="mount-page">
+    <div class="mount-tools">
+      <div class="search">
+        <input class="field" id="mount-q" type="search" placeholder="Search mounts" aria-label="Search mounts" autocomplete="off" spellcheck="false" maxlength="40" />
+      </div>
+      <div class="browse-row" id="mount-chips">
+        <button class="chip on" type="button" data-cat="all">All</button>
+        <button class="chip" type="button" data-cat="ground">Ground</button>
+        <button class="chip" type="button" data-cat="flying">Flying</button>
+      </div>
+      <span class="count" id="mount-count" aria-label="Results">0</span>
     </div>
-    <div class="browse-row" id="mount-chips">
-      <button class="chip on" type="button" data-cat="all">All</button>
-      <button class="chip" type="button" data-cat="ground">Ground</button>
-      <button class="chip" type="button" data-cat="flying">Flying</button>
+    <div class="mount-wrap">
+      <div class="mount-scroll scroll-none" id="mount-scroll"><div class="grid-space" id="mount-grid"></div></div>
+      <div class="grid-fade top" id="mount-fade-top"></div>
+      <div class="grid-fade bot" id="mount-fade-bot"></div>
+      <div class="mount-empty" id="mount-empty" hidden></div>
     </div>
-    <span class="count" id="mount-count" aria-label="Results">0</span>
   </div>
-  <div id="mount-grid"></div>
 </Shell>
 
 <script>

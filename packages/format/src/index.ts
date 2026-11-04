@@ -337,6 +337,10 @@ export interface CatalogEntry {
   /** Hashed WebP paths; empty string falls back to /placeholder.webp. */
   circle: string;
   tile: string;
+  /** Hashed WebP of the model, framed as its grid cell frames it, transparent. Absent: not baked yet, the page draws it. */
+  poster?: string;
+  /** The same on a female body, where a poster depends on the body worn. Absent: `poster` stands for both. */
+  posterFemale?: string;
   /** Present when baked. An entry without a model is not listed by the site. */
   model?: string;
   group?: string;
@@ -386,8 +390,12 @@ export interface ItemShardRef {
   facets: string[];
 }
 
-/** One shard row: retail display id, name, icon's object hash, facet, in-game entry (0: unknown), and the rare bodies it cannot show on. */
-export type ItemRow = [display: number, name: string, icon: string, facet: string, entry: number, notOn?: string[]];
+/**
+ * One shard row: retail display id, name, icon's object hash, facet, in-game entry (0: unknown),
+ * the rare bodies it cannot show on, and the posters' object hashes, male then female.
+ * A weapon stands alone, so it has only the first. `notOn` is null when a poster follows it.
+ */
+export type ItemRow = [display: number, name: string, icon: string, facet: string, entry: number, notOn?: string[] | null, poster?: string, posterFemale?: string];
 
 export interface ItemShard {
   line: string;
@@ -397,10 +405,14 @@ export interface ItemShard {
 
 /** Expands a shard row into the entry the browser works with. */
 export function itemOfRow(row: ItemRow, line: string, slot: SlotId): ItemEntry {
-  const [display, name, icon, facet, entry, notOn] = row;
+  const [display, name, icon, facet, entry, notOn, poster, posterFemale] = row;
   const id = `item-${display}`;
   const key = icon ? `objects/${icon}.webp` : "";
-  return { id, name, circle: key, tile: "", model: paths.item(id), slot, line, icon: key, ...(facet ? { facet } : {}), ...(entry ? { entry } : {}), ...(notOn?.length ? { notOn } : {}) };
+  return {
+    id, name, circle: key, tile: "", model: paths.item(id), slot, line, icon: key,
+    ...(facet ? { facet } : {}), ...(entry ? { entry } : {}), ...(notOn?.length ? { notOn } : {}),
+    ...(poster ? { poster: `objects/${poster}.webp` } : {}), ...(posterFemale ? { posterFemale: `objects/${posterFemale}.webp` } : {}),
+  };
 }
 
 export interface SearchRow {
@@ -453,6 +465,8 @@ export interface MountVariant {
   name: string;
   /** Hashed WebP of the mount's spell icon. */
   icon: string;
+  /** Hashed WebP of this look in its grid cell. Absent: not baked yet. */
+  poster?: string;
   mountId: number;
   /** The display id the game's morph takes, when the DLL has this look. */
   entry?: number;
@@ -598,6 +612,8 @@ export const paths = {
 
 export * from "./config";
 export * from "./look";
+export * from "./poster";
+export * from "./geosets";
 
 export function packUrl(base: string, key: string): string {
   return `${base.replace(/\/$/, "")}/${key}`;

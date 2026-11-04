@@ -15,6 +15,7 @@ export interface Report {
   baker: string;
   generatedAt: string;
   counts: { total: number; ok: number; failed: number; overBudget: number };
+  posters?: { ok: number; failed: number };
   bytes: { glb: number; clips: number; firstLoadMax: number };
   failures: { id: string; error: string }[];
   overBudget: { id: string; firstLoad: number }[];
@@ -27,15 +28,20 @@ export interface Report {
 }
 
 export async function buildReport(store: Store): Promise<Report> {
-  const records: BakeRecord[] = [...(await recordsOf(store)).values()];
+  const everything: BakeRecord[] = [...(await recordsOf(store)).values()];
+  // A poster is a small image of a model already listed here. Tens of thousands of rows of
+  // them would bury the table: they count, they fail out loud, and they get one line.
+  const records = everything.filter((r) => r.kind !== "poster");
+  const posters = everything.filter((r) => r.kind === "poster");
   const ok = records.filter((r) => r.status === "ok");
-  const failures = records.filter((r) => r.status === "failed").map((r) => ({ id: r.id, error: r.error ?? "unknown" }));
+  const failures = everything.filter((r) => r.status === "failed").map((r) => ({ id: r.id, error: r.error ?? "unknown" }));
   const over = ok.filter((r) => r.kind === "body" && FIRST_LOAD(r) > BODY_FIRST_LOAD_BUDGET).map((r) => ({ id: r.id, firstLoad: FIRST_LOAD(r) }));
   return {
     build: BUILD.version,
     baker: BAKER_VERSION,
     generatedAt: new Date().toISOString(),
     counts: { total: records.length, ok: ok.length, failed: failures.length, overBudget: over.length },
+    posters: { ok: posters.filter((r) => r.status === "ok").length, failed: posters.filter((r) => r.status === "failed").length },
     bytes: {
       glb: ok.reduce((n, r) => n + (r.sizes?.glb ?? 0), 0),
       clips: ok.reduce((n, r) => n + (r.sizes?.clipsTotal ?? 0), 0),
@@ -53,6 +59,7 @@ export function summaryMarkdown(r: Report): string {
     `## Bake report, build ${r.build}`,
     "",
     `${r.counts.ok} of ${r.counts.total} baked, ${r.counts.failed} failed, ${r.counts.overBudget} over budget.`,
+    ...(r.posters && r.posters.ok + r.posters.failed > 0 ? ["", `Posters: ${r.posters.ok} drawn, ${r.posters.failed} failed.`] : []),
     "",
     ...(r.usage ? [`R2: ${(r.usage.bytes / 1e9).toFixed(3)} of ${(r.usage.limits.bytes / 1e9).toFixed(1)} GB, ${r.usage.objects} objects, ${r.usage.classA} of ${r.usage.limits.classA} Class A this month.`, ""] : []),
     ...(r.listing
@@ -62,6 +69,8 @@ export function summaryMarkdown(r: Report): string {
           ...Object.entries(r.listing.lines).map(([id, l]) => `| ${id} | ${l.coverage.total} | ${l.listed} | ${l.notBaked} | ${l.failed + l.coverage.unresolved + l.coverage.unnamed + l.coverage.noSlot} | ${l.entries} |`),
           "",
           `Mounts: ${r.listing.mounts.listed} of ${r.listing.mounts.families} animals, ${r.listing.mounts.variantsListed} of ${r.listing.mounts.variants} colours, ${r.listing.mounts.failed} left out, ${r.listing.mounts.entries} with a display id.`,
+          "",
+          `Posters listed: ${r.listing.posters?.mounts ?? 0} of ${r.listing.mounts.variantsListed} colours, ${r.listing.posters?.items ?? 0} items, ${r.listing.posters?.sets ?? 0} sets.`,
           "",
         ]
       : []),

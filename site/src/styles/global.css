@@ -530,8 +530,10 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .mount-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
 .mount-tools .search { flex: 1 1 220px; max-width: 360px; }
 .mount-tools .count { margin-left: auto; }
-.circle-name { flex: 1; min-width: 0; }
-.circle-count { flex: none; font-size: 11px; line-height: 1; padding: 3px 5px; border-radius: 4px; background: var(--card-hi); color: var(--text-dim, inherit); }
+.mount-page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.mount-wrap { flex: 1; min-height: 0; position: relative; }
+.mount-scroll { position: absolute; inset: 0; }
+.mount-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
 [data-tab=sets] .only-items { visibility: hidden; }
 [data-tab=items] .only-sets { display: none !important; }
 .browse-chips { position: relative; flex: none; }
@@ -540,7 +542,6 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .browse-lines { margin-bottom: 23px; height: 26px; flex-wrap: nowrap; overflow: hidden; }
 .browse-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 26px 0 22px; }
 .browse-tools { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-.browse-tools .pill { height: 31px; padding: 0 12px; }
 .browse-tools .count { margin: 0 8px 0 6px; }
 .chips-gap { row-gap: 9px; }
 .browse-rule { margin-top: 11px; }
@@ -548,46 +549,66 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .grid-wrap { flex: 1; min-height: 0; position: relative; margin-top: 24px; }
 .grid-scroll { position: absolute; inset: 0; }
 .grid-space { position: relative; width: 100%; }
-.grid-row { position: absolute; left: 0; top: 0; display: flex; gap: var(--tile-gap); will-change: transform; contain: layout style; }
+.grid-row { position: absolute; left: var(--row-x, 0); top: 0; display: flex; gap: var(--tile-gap); will-change: transform; contain: layout style; }
 .grid-fade { position: absolute; left: 0; right: 0; height: 34px; pointer-events: none; opacity: 0; transition: opacity .08s linear; z-index: 3; }
 .grid-fade.top { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--base) 92%, transparent), transparent); }
 .grid-fade.bot { bottom: 0; background: linear-gradient(to top, color-mix(in srgb, var(--base) 92%, transparent), transparent); }
 .grid-fade.show { opacity: 1; }
 .grid-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
 
+/* A card of the figure grid (UiKit.cpp DrawCard, TransmogItemModelTemplate): retail's black
+   ground exactly the size of the tile, the picture on it, and the frame reaching past it.
+   The live canvas draws in the tile's rect, so it never covers the frame or the name. */
 .tile {
-  --ht: 0; position: relative; display: block; flex: none; width: var(--tile-w); height: var(--tile-h); padding: 0; background: none; border: 0; contain: layout paint style;
+  position: relative; display: block; flex: none; width: var(--tile-w); height: var(--tile-h); padding: 0; background: none; border: 0; contain: layout style;
   isolation: isolate; color: var(--ink);
 }
 .tile > * { position: absolute; pointer-events: none; }
-.tile-plate { inset: 4px; background: var(--plate); border-radius: 4px; }
-.tile-ico { inset: 7px; overflow: hidden; border-radius: 5px; transition: inset .06s linear; }
-.tile:hover .tile-ico { inset: 4.5px; }
-.tile-ico img { width: 100%; height: 100%; display: block; transform: scale(1.16); opacity: 0; transition: opacity .12s linear; }
-.tile-ico img[data-ok] { opacity: 1; }
-.tile-glyph { left: 50%; top: 40%; width: 34px; height: 34px; transform: translate(-50%, -50%); background-size: 100% 100%; opacity: .55; }
-.tile-frame { inset: 0; border: 1px solid var(--line); border-radius: 8px; transition: border-color .05s linear, box-shadow .05s linear; }
+.tile:focus-visible { outline: 0; }
+.tile-plate { inset: 0; background: #000; }
+.tile-poster { inset: 0; width: 100%; height: 100%; display: block; opacity: 0; }
+.tile-poster[data-ok] { opacity: 1; animation: poster-in .14s linear; }
+@keyframes poster-in { from { opacity: 0; } to { opacity: 1; } }
+/* It goes over the first live frame, and comes back at once: the canvas clears as it does. */
+.tile.live .tile-poster { opacity: 0; transition: opacity .12s linear; }
+/* The empty card while its picture is on the way (DrawLoadingRing). A compositor's animation
+   that waits a moment, so what lands quickly never flashes one. */
+.tile-ring {
+  left: 50%; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; opacity: 0; z-index: 1;
+  border: 2px solid color-mix(in srgb, var(--faint) 22%, transparent); border-top-color: rgb(var(--accent-rgb) / .7);
+  animation: spin 1s linear infinite, ring-in .2s linear .25s forwards;
+}
+@keyframes ring-in { to { opacity: .85; } }
+.tile-poster[data-ok] ~ .tile-ring, .tile.hide .tile-ring, .tile.no-picture .tile-ring { display: none; }
+.tile-frame {
+  z-index: 2; inset: calc(var(--frame-over, 0px) * -1); border: 1px solid var(--line); border-radius: 8px; transition: background-color .06s linear, border-color .06s linear;
+}
 .tile:hover .tile-frame { border-color: rgb(var(--accent-rgb) / .95); }
 .tile.worn .tile-frame { border-color: var(--accent); box-shadow: inset 0 0 6px rgb(var(--accent-rgb) / .5); }
 /* Retail's card rim as a nine-slice mask in the theme's colour (UiKit.cpp DrawCard).
    Without nine-slice masks (Firefox), the CSS-drawn frame above stands in. */
 @supports (-webkit-mask-box-image: none) {
-  [data-art] .tile-frame {
-    border: 0; border-radius: 0; box-shadow: none; inset: .4px; background: var(--rim); transition: background-color .05s linear;
-    -webkit-mask-box-image: var(--sp-card-worn) 28 / 7.2px;
+  .tile-frame {
+    border: 0; border-radius: 0; box-shadow: none; background: var(--rim);
+    -webkit-mask-box-image: var(--img-card) 28 / var(--frame-slice, 14px);
   }
-  [data-art] .tile.set .tile-frame { -webkit-mask-box-image: var(--sp-setcard-worn) 28 / 7.2px; }
-  [data-art] .tile:hover .tile-frame { background: color-mix(in srgb, var(--rim), #fff 34%); border: 0; }
-  [data-art] .tile.worn .tile-frame { background: var(--accent); }
-  [data-art] .tile.worn:hover .tile-frame { background: color-mix(in srgb, var(--accent), #fff 25%); }
+  .tile.set .tile-frame { -webkit-mask-box-image: var(--img-setcard) 28 / var(--frame-slice, 14px); }
+  .tile:hover .tile-frame { background: color-mix(in srgb, var(--rim), #fff 34%); }
+  .tile:focus-visible .tile-frame { background: rgb(var(--accent-rgb) / .9); }
+  .tile.worn .tile-frame { background: var(--accent); box-shadow: none; }
+  .tile.worn:hover .tile-frame { background: color-mix(in srgb, var(--accent), #fff 25%); }
 }
-.tile-name { left: 6px; right: 6px; top: 58%; font-size: 13px; line-height: 16px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #ebe9e7; opacity: .92; text-shadow: 1px 1px 0 rgb(0 0 0 / .85); }
-.tile-pieces { inset: 8px 8px 24px; display: grid; gap: 1px; grid-template-columns: repeat(var(--cols, 3), 1fr); }
-.tile-pieces img { width: 100%; aspect-ratio: 1; display: block; border-radius: 1px; }
-.tile-setglyph { left: 50%; top: 34%; width: 26px; height: 22px; transform: translate(-50%, -50%); color: color-mix(in srgb, var(--faint) 70%, transparent); }
-.tile-setglyph svg, .tile-hide svg { width: 100%; height: 100%; }
+.tile-name {
+  left: calc(var(--tile-gap, 16px) * -.36); right: calc(var(--tile-gap, 16px) * -.36); top: calc(100% + 9px); height: 30px; font-size: 12.5px; line-height: 15px; text-align: center; color: var(--ink-mid);
+  white-space: normal; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; transition: color .06s linear;
+}
+.tile:hover .tile-name { color: var(--ink); }
+.tile-badge {
+  right: 4px; top: 4px; z-index: 3; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 4px; font-size: 11px; line-height: 17px; text-align: center; color: var(--ink-mid);
+  background: rgb(0 0 0 / .66); box-shadow: inset 0 0 0 1px rgb(var(--line-rgb) / .55); font-variant-numeric: tabular-nums; pointer-events: auto;
+}
 .tile-star {
-  left: 7px; top: 7px; width: 17px; height: 17px; display: none; place-content: center; color: var(--ink-mid); pointer-events: auto; z-index: 2;
+  left: 4px; top: 4px; width: 17px; height: 17px; display: none; place-content: center; color: var(--ink-mid); pointer-events: auto; z-index: 3;
 }
 .tile-star svg { width: 14px; height: 14px; stroke-width: 2; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .8)); }
 .tile:hover .tile-star, .tile.fav .tile-star { display: grid; }
@@ -597,14 +618,12 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .tile.saved .tile-flash { animation: tile-flash 1.06s linear; background: rgb(var(--accent-rgb) / .2); border-radius: 8px; }
 [data-art] .tile.saved .tile-flash { background: var(--sp-card-flash) center / 100% 100%; border-radius: 0; }
 @keyframes tile-flash { 0% { opacity: 0; } 19% { opacity: 1; } 78% { opacity: 1; } 100% { opacity: 0; } }
-.tile.hide .tile-hide { left: 50%; top: 40%; width: 26px; height: 22px; transform: translate(-50%, -50%); color: var(--red); opacity: .8; }
+.tile-hide { display: none; }
+.tile.hide .tile-hide { display: block; left: 50%; top: 42%; width: 26px; height: 22px; transform: translate(-50%, -50%); color: var(--red); opacity: .8; }
+.tile.hide .tile-hide svg { width: 100%; height: 100%; }
 [data-art] .tile.hide .tile-hide { background: var(--sp-hidden) center / 100% 100%; color: transparent; opacity: .75; }
 .tile.hide:hover .tile-hide, .tile.hide.worn .tile-hide { opacity: 1; }
-.tile.hide .tile-name { top: 62%; }
-.tile.figure .tile-plate { inset: 0; background: #000; border-radius: 0; }
-.tile.figure .tile-frame { z-index: 2; }
-.tile.figure .tile-name { top: auto; bottom: 8px; }
-.tile.figure .tile-load { left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-width: 2px; }
+.tile.hide .tile-name { left: 6px; right: 6px; top: 56%; height: auto; font-size: 13px; line-height: 16px; color: #ebe9e7; display: block; }
 
 .custom-pane { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(176px, 216px) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 1100px) { .custom-pane { grid-template-columns: minmax(0, 1fr); overflow-y: auto; } }
@@ -776,5 +795,5 @@ a.body-tile:hover p { color: var(--accent-ink); }
   html *, html *::before, html *::after {
     animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important;
   }
-  .spin { border-color: var(--accent); }
+  .spin, .tile-ring { border-color: var(--accent); }
 }

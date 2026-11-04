@@ -47,7 +47,7 @@ const swUrl = `${BASE}sw.js?packs=${encodeURIComponent(PACK_BASE)}`;
         if (s === "1") d.dataset.art = "1";
       })();
     </script>
-    <style set:html={`:root{--img-backdrop:url(${u("img/bg-wide-960.webp")});--model-background-image:url(${u("model-background.svg")})}`}></style>
+    <style set:html={`:root{--img-backdrop:url(${u("img/bg-wide-960.webp")});--model-background-image:url(${u("model-background.svg")});--img-card:url(${u("img/card-worn.webp")});--img-setcard:url(${u("img/setcard-worn.webp")})}`}></style>
     {/* Images connect without CORS, the engine's fetches with it: two pools, so two preconnects. */}
     {PACK_ORIGIN && <link rel="preconnect" href={PACK_ORIGIN} />}
     {PACK_ORIGIN && <link rel="preconnect" href={PACK_ORIGIN} crossorigin="anonymous" />}

@@ -12,6 +12,10 @@ interface Win extends Window {
   __engineStub?: boolean;
   __figures?: Set<HTMLElement>;
   __engineFail?: boolean;
+  __posterAsks?: number;
+  __postersDrawing?: number;
+  __postersPeak?: number;
+  __posterSpecs?: unknown[];
 }
 const win = window as Win;
 win.__engineCalls ??= [];
@@ -166,10 +170,29 @@ export function createEngine(_options: EngineOptions): ViewerEngine {
     prefetchLook() {},
     async equip() {},
     async previewEquip() {},
+    prefetchEquip() {},
+    warmItems() {},
+    warmPrograms() {},
     setSheathed() {},
     async setRider() {},
     focusSlot() {},
-    addFigureCell(el) { win.__figures!.add(el); return () => win.__figures!.delete(el); },
+    addFigureCell(el, opts) {
+      win.__figures!.add(el);
+      const frame = requestAnimationFrame(() => opts.onDrawn?.());
+      return () => {
+        cancelAnimationFrame(frame);
+        win.__figures!.delete(el);
+      };
+    },
+    async figurePoster(spec) {
+      win.__posterAsks = (win.__posterAsks ?? 0) + 1;
+      win.__postersDrawing = (win.__postersDrawing ?? 0) + 1;
+      win.__postersPeak = Math.max(win.__postersPeak ?? 0, win.__postersDrawing);
+      await new Promise((r) => setTimeout(r, 40));
+      win.__postersDrawing--;
+      win.__posterSpecs = [...(win.__posterSpecs ?? []), spec];
+      return "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+    },
     async exportPNG() {},
     async exportSTL() {},
     async exportGLB() {},

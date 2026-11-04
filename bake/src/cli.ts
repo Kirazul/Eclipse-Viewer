@@ -1,9 +1,9 @@
 import { untilOk } from "./lib/retry";
 import { appendFileSync } from "node:fs";
-import { type BakeContext, isUpToDate, openContext } from "./bake/context";
+import { type BakeContext, openContext } from "./bake/context";
 import { runCatalog } from "./commands/catalog";
 import { runReport } from "./commands/report";
-import { expandScope, projectUnits, shardOf } from "./commands/scope";
+import { expandScope, projectUnits, shardOf, unitDone } from "./commands/scope";
 import { humanBytes, log, mapLimit } from "./lib/env";
 import { BudgetExceeded, BudgetStore, LIMITS } from "./store/budget";
 import { openStore } from "./store/store";
@@ -11,14 +11,16 @@ import { openStore } from "./store/store";
 /**
  * The cloud pipeline's commands, as .github/workflows/bake.yml calls them:
  *   pnpm bake catalog [--upload]
- *   pnpm bake plan --scope S --shards N [--force] --github-output FILE
- *   pnpm bake run --scope S --shard I --shards N [--force] [--upload]
+ *   pnpm bake plan --scope S --shards N [--force|--redo] --github-output FILE
+ *   pnpm bake run --scope S --shard I --shards N [--force|--redo] [--upload]
  *   pnpm bake report [--upload] [--shards N] [--github-summary FILE]
  *   pnpm bake usage [--upload]
  *
  * `--scope` takes ui, bodies, items, items:midnight, items:warwithin, items:client,
  * items:eclipse, mounts, mount:<id>, a model id such as human-male, retail items such as
  * item:231550, display:<id>, sample:<n>, sample-mounts:<n>, all, or a comma list.
+ * `posters:mounts`, `posters:items:midnight`, `posters:sets:midnight` and the like draw
+ * what those baked, in a headless browser, as posters for the grid: see posters/bake.ts.
  * `--bodies human-male` limits an item's per-body pieces, for a proof on a slow line.
  * `--clips 0.0,804.0` bakes only those clips and `--tex-budget-mb 40` stops fetching
  * customization textures past that many downloaded megabytes, for the same reason. The
@@ -34,7 +36,7 @@ interface Args {
   flags: Map<string, string>;
 }
 
-const BOOLEAN = new Set(["upload", "force", "allow-partial"]);
+const BOOLEAN = new Set(["upload", "force", "redo", "allow-partial"]);
 
 export function parseArgs(argv: string[]): Args {
   const flags = new Map<string, string>();
@@ -75,6 +77,7 @@ function context(args: Args): BakeContext {
   const shard = args.command === "run" && Number(args.flags.get("shards") ?? 1) > 1 ? { index: Number(args.flags.get("shard")), count: Number(args.flags.get("shards")) } : undefined;
   const store = new BudgetStore(openStore(args.flags.has("upload")), shard ? { shard } : {});
   const ctx = openContext(source, store, args.flags.has("force"));
+  ctx.redo = args.flags.has("redo");
   const only = args.flags.get("bodies");
   if (only) ctx.onlyBodies = new Set(only.split(","));
   const clips = args.flags.get("clips");
@@ -98,7 +101,7 @@ async function plan(args: Args): Promise<void> {
   for (let i = 0; i < units.length; i++) {
     const u = units[i]!;
     // The ledger answers: this loop sends no HEAD and no LIST, whatever the scope.
-    if (await isUpToDate(ctx, u.id, u.output)) done++;
+    if (await unitDone(ctx, u)) done++;
     else {
       pending.add(shardOf(i, shards));
       todo.push(u);
@@ -133,9 +136,12 @@ async function run(args: Args): Promise<void> {
   let baked = 0;
   let stopped: BudgetExceeded | null = null;
   const mine = units.filter((_, i) => shardOf(i, shards) === shard);
+  const closePosters = async () => {
+    if (scope.includes("posters:")) await (await import("./posters/bake")).closePosterBrowser();
+  };
   await mapLimit(mine, concurrency, async (u) => {
     if (stopped) return;
-    if (await isUpToDate(ctx, u.id, u.output)) {
+    if (await unitDone(ctx, u)) {
       skipped++;
       return;
     }
@@ -143,7 +149,7 @@ async function run(args: Args): Promise<void> {
     try {
       // A failure here is nearly always a network stall, and each object already uploaded
       // is skipped on the next try, so trying again costs little and saves a whole rerun.
-      const rec = await untilOk(() => u.bake(ctx), (r) => r.status === "ok", 3, 15_000, (r, next) =>
+      const rec = await untilOk(() => u.bake(ctx), (r) => r.status === "ok" || r.final === true, 3, 15_000, (r, next) =>
         log(`  retrying ${u.id} (try ${next}): ${r.error}`),
       );
       if (rec.status === "ok") {
@@ -159,7 +165,7 @@ async function run(args: Args): Promise<void> {
       if (e instanceof BudgetExceeded) stopped = e;
       else throw e;
     }
-  });
+  }).finally(closePosters);
   await store.flush();
   const u = store.current();
   const pulled = (ctx.source as { downloaded?: number }).downloaded;

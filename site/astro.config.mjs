@@ -10,6 +10,7 @@ import { enginePreload, basisAssets } from "./integrations/engine-assets.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const engineEntry = resolve(here, "../engine/src/index.ts");
 const stubEntry = resolve(here, "src/lib/dev/engine-stub.ts");
+const stubCells = resolve(here, "src/lib/dev/cells-stub.ts");
 
 // ECLIPSE_ENGINE=stub is the test double. A missing engine also falls back to it
 // so the site still builds while engine/ is being written; say so out loud.
@@ -45,7 +46,7 @@ export default defineConfig({
   vite: {
     plugins: [tailwindcss(), engineBasePaths],
     resolve: {
-      alias: useStub ? [{ find: /^@eclipse\/engine$/, replacement: stubEntry }] : [],
+      alias: useStub ? [{ find: /^@eclipse\/engine$/, replacement: stubEntry }, { find: /^@eclipse\/engine\/cells$/, replacement: stubCells }] : [],
     },
     build: { assetsInlineLimit: 0, cssMinify: true, target: "es2022" },
   },

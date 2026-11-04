@@ -13,6 +13,7 @@ import { modelIdOfDisplay } from "../mounts/bake";
 import type { MountFamily } from "../mounts/scan";
 import type { Store } from "../store/store";
 import { decodeBlp } from "../tex/blp";
+import { posterHash, posterUnitId } from "../posters/spec";
 import { lineScope, mountScope } from "./scope";
 
 /** UiTextureAtlas 897: retail's character-creator race portraits (Eclipse's races_pack.py). */
@@ -108,6 +109,17 @@ export function listable(store: Store, rec: BakeRecord | undefined, output: stri
   return true;
 }
 
+/** A poster's objects for one catalogue entry, when its own unit finished and each passed its load check. */
+function postersOf(store: Store, records: ReadonlyMap<string, BakeRecord>, entryId: string): { male?: string; female?: string } {
+  const rec = records.get(posterUnitId(entryId));
+  if (!rec?.posters || rec.status !== "ok" || rec.validated !== true) return {};
+  const index = store as RecordIndex;
+  const ok = (k: string | undefined) => (k && index.object?.(k)?.ok !== false ? k : undefined);
+  const male = ok(rec.posters.male);
+  const female = ok(rec.posters.female);
+  return { ...(male ? { male } : {}), ...(female ? { female } : {}) };
+}
+
 export interface LineSnapshot {
   line: string;
   rows: LineRow[];
@@ -119,6 +131,7 @@ export interface Listing {
   lines: Record<string, { rows: number; listed: number; notBaked: number; failed: number; entries: number; coverage: LineCoverage }>;
   sets: Record<string, { total: number; listed: number }>;
   mounts: { families: number; listed: number; variants: number; variantsListed: number; failed: number; entries: number; excluded: Record<string, number> };
+  posters: { mounts: number; items: number; sets: number };
 }
 
 const KNOWN_FACETS = ["cloth", "leather", "mail", "plate"];
@@ -132,7 +145,7 @@ export interface ShardOutput {
   shards: Map<string, ItemShard>;
   iconOf: Map<number, string>;
   listedCount: Map<string, number>;
-  stats: Map<string, { listed: number; notBaked: number; failed: number; entries: number }>;
+  stats: Map<string, { listed: number; notBaked: number; failed: number; entries: number; posters: number }>;
 }
 
 /** Rows that passed, by line and slot: what the browser fetches when it opens one. */
@@ -141,9 +154,9 @@ export function buildShards(store: Store, snapshots: readonly LineSnapshot[], re
   const shards = new Map<string, ItemShard>();
   const iconOf = new Map<number, string>();
   const listedCount = new Map<string, number>();
-  const stats = new Map<string, { listed: number; notBaked: number; failed: number; entries: number }>();
+  const stats = new Map<string, { listed: number; notBaked: number; failed: number; entries: number; posters: number }>();
   for (const snap of snapshots) {
-    const stat = { listed: 0, notBaked: 0, failed: 0, entries: 0 };
+    const stat = { listed: 0, notBaked: 0, failed: 0, entries: 0, posters: 0 };
     stats.set(snap.line, stat);
     const bySlot = new Map<SlotId, ItemRow[]>();
     const sorted = [...snap.rows].sort((a, b) => a.name.localeCompare(b.name) || a.display - b.display);
@@ -161,6 +174,14 @@ export function buildShards(store: Store, snapshots: readonly LineSnapshot[], re
       const icon = rec.icons?.[String(r.iconFdid)] ?? Object.values(rec.icons ?? {})[0];
       if (icon) iconOf.set(r.display, icon);
       const row: ItemRow = rec.notOn?.length ? [r.display, r.name, iconHash(icon), r.facet ?? "", r.entry ?? 0, rec.notOn] : [r.display, r.name, iconHash(icon), r.facet ?? "", r.entry ?? 0];
+      // The posters follow, and only when there are any: a row with none is the row it was.
+      const { male, female } = postersOf(store, records, id);
+      if (male || female) {
+        row[5] = rec.notOn?.length ? rec.notOn : null;
+        row[6] = posterHash(male);
+        if (female) row[7] = posterHash(female);
+        stat.posters++;
+      }
       const list = bySlot.get(r.slot);
       if (list) list.push(row);
       else bySlot.set(r.slot, [row]);
@@ -199,7 +220,8 @@ export function buildSets(snapshots: readonly LineSnapshot[], out: ShardOutput, 
         if (name) names[slot] = name;
       }
       if (Object.keys(pieces).length === 0) continue;
-      list.push({ id: s.id, name: s.name, circle: Object.values(icons)[0] ?? "", tile: "", line: s.line, pieces, icons, names, model: paths.set(s.id) });
+      const { male, female } = postersOf(store, records, s.id);
+      list.push({ id: s.id, name: s.name, circle: Object.values(icons)[0] ?? "", tile: "", line: s.line, pieces, icons, names, model: paths.set(s.id), ...(male ? { poster: male } : {}), ...(female ? { posterFemale: female } : {}) });
     }
     list.sort((a, b) => a.name.localeCompare(b.name));
     lines.set(snap.line, list);
@@ -219,7 +241,8 @@ export function buildMounts(store: Store, families: readonly MountFamily[], reco
       for (const v of f.variants) {
         const id = modelIdOfDisplay(v.display);
         if (!ok.has(v.display) || (store as RecordIndex).object?.(paths.manifest(id))?.ok === false) continue;
-        variants.push({ id, display: v.display, name: v.name, icon: rec.icons?.[String(v.iconFdid)] ?? "", mountId: v.mountId, ...(v.entry ? { entry: v.entry } : {}) });
+        const poster = postersOf(store, records, id).male;
+        variants.push({ id, display: v.display, name: v.name, icon: rec.icons?.[String(v.iconFdid)] ?? "", mountId: v.mountId, ...(v.entry ? { entry: v.entry } : {}), ...(poster ? { poster } : {}) });
       }
     }
     if (!variants.length) {
@@ -227,7 +250,7 @@ export function buildMounts(store: Store, families: readonly MountFamily[], reco
       continue;
     }
     const first = variants[0]!;
-    entries.push({ id: f.id, name: first.name, circle: first.icon, tile: "", model: paths.manifest(first.id), mountId: first.mountId, flying: f.flying, variants });
+    entries.push({ id: f.id, name: first.name, circle: first.icon, tile: "", ...(first.poster ? { poster: first.poster } : {}), model: paths.manifest(first.id), mountId: first.mountId, flying: f.flying, variants });
   }
   entries.sort((a, b) => a.name.localeCompare(b.name));
   return { entries, failed };
@@ -292,6 +315,12 @@ async function applyBaked(store: Store, catalog: Catalog): Promise<Map<string, u
       failed: mountsFailed,
       entries: mounts.reduce((n, m) => n + m.variants.filter((v) => v.entry).length, 0),
       excluded: mountScan.excluded,
+    },
+    // What a bake of posters still has to do: a card with none draws its picture in the page.
+    posters: {
+      mounts: mounts.reduce((n, m) => n + m.variants.filter((v) => v.poster).length, 0),
+      items: [...out.stats.values()].reduce((n, s) => n + s.posters, 0),
+      sets: [...sets.values()].reduce((n, l) => n + l.filter((s) => s.poster).length, 0),
     },
   };
   files.set(LISTING_KEY, listing);

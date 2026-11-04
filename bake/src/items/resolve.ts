@@ -1,4 +1,4 @@
-import type { SlotId } from "@eclipse/format";
+import { SLOT_GEOSET_GROUPS, type SlotId } from "@eclipse/format";
 import type { Db2, Row } from "../db2/db2";
 import { num } from "../db2/db2";
 
@@ -12,9 +12,11 @@ import { num } from "../db2/db2";
  */
 
 /** ItemAppearance.DisplayType -> slot. */
+// Measured on Item + ItemModifiedAppearance + ItemAppearance at the pinned build: shields are
+// type 13 (2,946 rows), bows, guns, crossbows and wands type 12 (4,169). Not the other way round.
 const DISPLAY_SLOT: Record<number, SlotId> = {
   0: "head", 1: "shoulder", 2: "shirt", 3: "chest", 4: "waist", 5: "legs", 6: "feet", 7: "wrist", 8: "hands",
-  9: "back", 10: "tabard", 11: "mainhand", 12: "offhand", 13: "ranged", 14: "offhand", 15: "offhand",
+  9: "back", 10: "tabard", 11: "mainhand", 12: "ranged", 13: "offhand", 14: "offhand", 15: "offhand",
 };
 
 export function slotOfDisplayType(t: number): SlotId | null {
@@ -228,20 +230,7 @@ export function sheathMatrix(pos: readonly [number, number, number], yawDeg: num
   return out;
 }
 
-/** Which geoset group a slot owns, and which AttachmentGeosetGroup column drives it. */
-const SLOT_GROUPS: Partial<Record<SlotId, readonly (readonly [number, number])[]>> = {
-  head: [[27, 0], [21, 1]],
-  shoulder: [[26, 0]],
-  chest: [[8, 0], [10, 1], [13, 2], [22, 3], [28, 4]],
-  shirt: [[8, 0], [10, 1]],
-  legs: [[11, 0], [9, 1], [13, 2]],
-  hands: [[4, 0], [23, 1]],
-  feet: [[5, 0], [20, 1]],
-  waist: [[18, 0]],
-  back: [[15, 0]],
-  tabard: [[12, 0]],
-  wrist: [],
-};
+const SLOT_GROUPS = SLOT_GEOSET_GROUPS;
 
 export interface GeosetFilter {
   /** Goes into the model's id: two filters are two looks of one file. */
@@ -278,13 +267,16 @@ export function geosetFilter(d: Pick<ResolvedDisplay, "attachmentGroups" | "grou
   };
 }
 
-/** Does more than one slot wear this ModelResources? Stops at the first proof. */
-export async function isCombined(db: Db2, res: number, slot: SlotId, limit = 8): Promise<boolean> {
+/**
+ * Does more than one slot wear this ModelResources? Stops at the first proof. Most rows
+ * naming a resource have no appearance at all (a set's first hundred can be such rows),
+ * so every one is read: stopping early called a set's combined model single-slot, and then
+ * wearing its gloves drew the whole set.
+ */
+export async function isCombined(db: Db2, res: number, slot: SlotId): Promise<boolean> {
   if (!res) return false;
-  let looked = 0;
   for (const k of [0, 1]) {
     for (const row of await db.where("ItemDisplayInfo", `ModelResourcesID_${k}`, res)) {
-      if (looked++ >= limit) return false;
       const app = (await db.where("ItemAppearance", "ItemDisplayInfoID", row.ID ?? ""))[0];
       if (!app) continue;
       const other = slotOfDisplayType(num(app.DisplayType));
