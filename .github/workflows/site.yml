@@ -15,7 +15,8 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # A deploy cancelled halfway leaves the old site up: let it finish, and the newest waits its turn.
+  cancel-in-progress: false
 
 jobs:
   build:
