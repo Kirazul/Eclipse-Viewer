@@ -53,7 +53,7 @@ jobs:
           key: tact-${{ hashFiles('packages/format/src/config.ts') }}
       - run: pnpm bake catalog --upload
       - id: plan
-        run: pnpm bake plan --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} ${{ inputs.redo && '--redo' || '' }} ${{ inputs.allow_partial && '--allow-partial' || '' }} --github-output "$GITHUB_OUTPUT"
+        run: pnpm bake plan --upload --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} ${{ inputs.redo && '--redo' || '' }} ${{ inputs.allow_partial && '--allow-partial' || '' }} --github-output "$GITHUB_OUTPUT"
 
   bake:
     needs: plan
