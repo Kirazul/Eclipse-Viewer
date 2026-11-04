@@ -166,6 +166,26 @@ describe("a plan costs one read, however big the bucket", () => {
 });
 
 describe("a matrix of shards", () => {
+  it("a model that failed once and then succeeded does not go back to its failure", async () => {
+    const inner = new CountingStore();
+    const rec = (status: "ok" | "failed") => ({ id: "u", kind: "body", status, build: "", baker: "", source: "", inputs: {}, warnings: [], seconds: 0, bakedAt: "" });
+    const first = new BudgetStore(inner);
+    await writeRecord(first, rec("failed") as never);
+    await first.flush();
+
+    const shard = new BudgetStore(inner, { limitBytes: 1000, shard: { index: 0, count: 1 } });
+    await writeRecord(shard, rec("ok") as never);
+    await shard.flush();
+
+    const report = new BudgetStore(inner);
+    await report.foldShards(1);
+    await report.flush();
+
+    const next = new BudgetStore(inner);
+    await next.open();
+    expect(next.records.get("u")?.status).toBe("ok");
+  });
+
   it("each takes its fair part, and report folds the deltas in", async () => {
     const inner = new CountingStore();
     const seed = new BudgetStore(inner);

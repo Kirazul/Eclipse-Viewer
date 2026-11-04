@@ -419,7 +419,12 @@ export class BudgetStore implements Store {
       const d = JSON.parse(b.toString("utf8")) as ShardDelta;
       for (const r of d.objects) this.known.set(r.k, fromRow(r));
       for (const k of d.removed) this.known.delete(k);
-      for (const r of d.records as { id: string; [k: string]: unknown }[]) this.records.set(r.id, r);
+      // newRecords too: writeTotals keeps only those over what R2 holds, or a model that
+      // failed once and then succeeded would go back to its old failure.
+      for (const r of d.records as { id: string; [k: string]: unknown }[]) {
+        this.records.set(r.id, r);
+        this.newRecords.set(r.id, r);
+      }
       this.delta.bytes += d.usage.bytes;
       this.delta.objects += d.usage.objects;
       this.delta.classA += d.usage.classA;
