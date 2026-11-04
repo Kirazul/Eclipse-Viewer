@@ -68,7 +68,7 @@ describe("the budget guard", () => {
     await expect(store.put("objects/4.bin", bytes(1))).rejects.toMatchObject({ what: "writes" });
   });
 
-  it("a force re-bake overwrites and does not count the bytes twice", async () => {
+  it("a force re-bake of the same object sends nothing and counts nothing twice", async () => {
     const store = new BudgetStore(new CountingStore());
     await store.put(NOT_COMPRESSED, bytes(500));
     const once = store.current();
@@ -76,7 +76,7 @@ describe("the budget guard", () => {
     const twice = store.current();
     expect(twice.bytes).toBe(once.bytes);
     expect(twice.objects).toBe(once.objects);
-    expect(twice.classA).toBe(once.classA + 1);
+    expect(twice.classA).toBe(once.classA);
   });
 
   it("counts what R2 stores: the brotli, not the raw", async () => {
@@ -166,6 +166,30 @@ describe("a plan costs one read, however big the bucket", () => {
 });
 
 describe("a matrix of shards", () => {
+  it("two shards with the same file upload it once, and one asks first", async () => {
+    const inner = new CountingStore();
+    const seed = new BudgetStore(inner);
+    await seed.open();
+    await seed.flush();
+    const shard = (index: number) => new BudgetStore(inner, { limitBytes: 100000, shard: { index, count: 2 } });
+    const a = shard(0);
+    const b = shard(1);
+    const before = inner.puts;
+    await Promise.all([a.put("objects/same.bin", bytes(50)), a.put("objects/same.bin", bytes(50))]);
+    await b.put("objects/same.bin", bytes(50));
+    await a.put("objects/same.bin", bytes(50));
+    expect(inner.puts - before).toBe(1);
+    expect(b.has("objects/same.bin")).toBe(true);
+    await a.flush();
+    await b.flush();
+    const report = new BudgetStore(inner);
+    await report.foldShards(2);
+    await report.flush();
+    const next = new BudgetStore(inner);
+    await next.open();
+    expect(next.current().bytes).toBe(50);
+  });
+
   it("a model that failed once and then succeeded does not go back to its failure", async () => {
     const inner = new CountingStore();
     const rec = (status: "ok" | "failed") => ({ id: "u", kind: "body", status, build: "", baker: "", source: "", inputs: {}, warnings: [], seconds: 0, bakedAt: "" });

@@ -155,6 +155,19 @@ export class R2Store implements Store {
     }
   }
 
+  /** Both sizes of an object: what the manifests talk about, and what R2 stores. */
+  async head(key: string): Promise<{ raw: number; wire: number } | null> {
+    try {
+      const r = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      const wire = r.ContentLength ?? 0;
+      const raw = Number(r.Metadata?.["raw-bytes"]);
+      return { raw: Number.isFinite(raw) && raw > 0 ? raw : wire, wire };
+    } catch (e) {
+      if (isNotFound(e)) return null;
+      throw e;
+    }
+  }
+
   async get(key: string): Promise<Buffer | null> {
     try {
       const r = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));

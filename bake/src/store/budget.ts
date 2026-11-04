@@ -234,8 +234,47 @@ export class BudgetStore implements Store {
     return this.inner.get(key);
   }
 
+  /**
+   * `objects/` keys are named by their content, so an object already there is the same
+   * bytes. Parallel jobs can't see each other's uploads and items share files: without
+   * this, Midnight's 23,500 objects cost 105,000 writes. Asking costs a read, and the
+   * month allows 10 million of those against 1 million writes.
+   */
   async put(key: string, body: Uint8Array): Promise<void> {
     await this.open();
+    if (key.startsWith("objects/")) {
+      if (this.known.has(key)) return;
+      const running = this.uploading.get(key);
+      if (running) return running;
+      const job = this.putOnce(key, body).finally(() => this.uploading.delete(key));
+      this.uploading.set(key, job);
+      return job;
+    }
+    await this.send(key, body);
+  }
+
+  private readonly uploading = new Map<string, Promise<void>>();
+
+  private async putOnce(key: string, body: Uint8Array): Promise<void> {
+    const inner = this.inner as Store & { head?: (key: string) => Promise<{ raw: number; wire: number } | null> };
+    let there: { raw: number; wire: number } | null;
+    if (inner.head) there = await inner.head(key);
+    else {
+      const raw = await inner.stat(key);
+      there = raw === null ? null : { raw, wire: raw };
+    }
+    this.delta.classB++;
+    if (!there) return this.send(key, body);
+    const entry: KnownObject = { raw: there.raw, wire: there.wire, ok: checkObject(key, body) };
+    this.known.set(key, entry);
+    this.newObjects.set(key, entry);
+    this.removed.delete(key);
+    this.delta.bytes += there.wire;
+    this.delta.objects++;
+    this.tick();
+  }
+
+  private async send(key: string, body: Uint8Array): Promise<void> {
     const wire = await toWire(key, body);
     this.charge(key, wire.length);
     const inner = this.inner as Store & { putWire?: (key: string, wire: Uint8Array, raw: number) => Promise<void> };
