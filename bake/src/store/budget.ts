@@ -131,7 +131,7 @@ export class BudgetStore implements Store {
 
   open(): Promise<void> {
     this.opened ??= this.load().catch((e) => {
-      this.opened = undefined;
+      this.opened = null;
       throw e;
     });
     return this.opened;
