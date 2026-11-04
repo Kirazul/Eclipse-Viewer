@@ -1,0 +1,13 @@
+packages:
+  - packages/*
+  - bake
+  - engine
+  - site
+minimumReleaseAgeExclude:
+  - lucide-react@1.68.0
+  - mediabunny@1.65.1
+  - react-resizable-panels@4.18.0
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - workerd

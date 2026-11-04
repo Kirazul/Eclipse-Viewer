@@ -1,0 +1,83 @@
+# The whole asset pipeline runs here, in the cloud: raw files come from Blizzard's
+# CDN and wago.tools, baked packs go straight to R2, and nothing comes from or
+# goes to the owner's PC. Start it from GitHub's Actions tab, or:
+#   gh workflow run bake.yml -f scope=human-male
+name: Bake
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "What to bake: a model id (human-male), a class (bodies, mounts, items) or all"
+        default: human-male
+      shards:
+        description: "Parallel jobs, 1-20"
+        default: "4"
+      force:
+        description: "Re-bake even if the output already exists"
+        type: boolean
+        default: false
+
+concurrency:
+  group: bake
+  cancel-in-progress: false
+
+env:
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile --filter @eclipse/bake...
+      # Build-wide indexes are large and never change for a pinned build.
+      - uses: actions/cache@v4
+        with:
+          path: work/tact
+          key: tact-${{ hashFiles('packages/format/src/config.ts') }}
+      - run: pnpm bake catalog --upload
+      - id: plan
+        run: pnpm bake plan --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} --github-output "$GITHUB_OUTPUT"
+
+  bake:
+    needs: plan
+    if: needs.plan.outputs.shards != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile --filter @eclipse/bake...
+      - uses: actions/cache@v4
+        with:
+          path: work/tact
+          key: tact-${{ hashFiles('packages/format/src/config.ts') }}
+      # Each object is uploaded as soon as it is done, so a re-run skips finished work.
+      - run: pnpm bake run --scope "${{ inputs.scope }}" --shard "${{ matrix.shard }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} --upload
+
+  report:
+    needs: [plan, bake]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile --filter @eclipse/bake...
+      - run: pnpm bake report --upload --github-summary "$GITHUB_STEP_SUMMARY"
