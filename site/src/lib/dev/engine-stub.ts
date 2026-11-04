@@ -193,6 +193,7 @@ export function createEngine(_options: EngineOptions): ViewerEngine {
       win.__posterSpecs = [...(win.__posterSpecs ?? []), spec];
       return "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
     },
+    holdCells() {},
     async exportPNG() {},
     async exportSTL() {},
     async exportGLB() {},

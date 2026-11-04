@@ -162,7 +162,8 @@ test.describe("the Mounts page", () => {
       await gate;
       await r.fulfill({ body: WEBP, contentType: "image/webp" });
     });
-    await page.goto("mounts/");
+    // The held posters hold the page's load event too, and only this test can let them go.
+    await page.goto("mounts/", { waitUntil: "domcontentloaded" });
     const card = page.locator(".tile").nth(1);
     await expect(card).toBeVisible();
     const ring = card.locator(".tile-ring");
@@ -235,6 +236,79 @@ test.describe("the Mounts page", () => {
     expect(await figures(page)).toBe(0);
     expect(await asks(page)).toBe(0);
     expect([...sizes.keys()].some((u) => /three|engine|cells/i.test(u))).toBe(false);
+  });
+
+  test("a list scrolling under a resting pointer wakes nothing, and the next real move does", async ({ page, isMobile }) => {
+    test.skip(isMobile, "a phone has no hover");
+    await serveMounts(page, mounts(600));
+    await page.goto("mounts/");
+    const cards = page.locator(".grid-row:not([hidden]) .tile");
+    await expect(cards.first()).toBeVisible();
+    await cards.nth(2).hover();
+    await expect(cards.nth(2)).toHaveClass(/live/);
+    // The wheel, with the pointer where it is: what it was on lets go at once.
+    const box = (await page.locator("#mount-scroll").boundingBox())!;
+    for (let i = 0; i < 12; i++) {
+      await page.mouse.wheel(0, 200);
+      await page.waitForTimeout(40);
+    }
+    await expect(page.locator(".tile.live")).toHaveCount(0);
+    // At rest under the pointer now, however long it stays: nothing it was not asked for.
+    await page.waitForTimeout(700);
+    await expect(page.locator(".tile.live")).toHaveCount(0);
+    expect(await figures(page)).toBe(0);
+    // The pointer goes somewhere of its own: that card takes it.
+    const target = await page.evaluate(([top, bottom]) => {
+      for (const t of document.querySelectorAll<HTMLElement>(".grid-row:not([hidden]) .tile")) {
+        const r = t.getBoundingClientRect();
+        if (r.top > top! && r.bottom < bottom!) return { id: t.dataset.mount, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+      return null;
+    }, [box.y, box.y + box.height]);
+    await page.mouse.move(target!.x, target!.y);
+    await expect(page.locator(`.tile[data-mount="${target!.id}"]`)).toHaveClass(/live/);
+  });
+
+  test("a fling asks for no poster on the way, and only for what it stops on", async ({ page, isMobile }) => {
+    test.skip(isMobile, "desktop");
+    const asked: string[] = [];
+    page.on("request", (r) => { if (/objects\/[0-9a-f]{16}\.webp/.test(r.url())) asked.push(r.url()); });
+    await serveMounts(page, mounts(4000));
+    await page.goto("mounts/");
+    await expect(page.locator(".tile").first()).toBeVisible();
+    await page.waitForTimeout(300);
+    const before = asked.length;
+    // 2 px a millisecond, at whatever rate the display runs: faster than a view in half a second.
+    const rows = await page.evaluate(async () => {
+      const s = document.getElementById("mount-scroll")!;
+      const start = performance.now();
+      let at = performance.now();
+      while (performance.now() - start < 800) {
+        await new Promise(requestAnimationFrame);
+        const now = performance.now();
+        s.scrollTop += (now - at) * 4;
+        at = now;
+      }
+      return s.scrollTop;
+    });
+    const during = asked.length - before;
+    console.log("posters asked for over a fling of", Math.round(rows), "px:", during);
+    expect(during).toBe(0);
+    await expect.poll(() => asked.length - before, { timeout: 5000 }).toBeGreaterThan(0);
+  });
+
+  test("only the card being drawn turns its ring: a page of them stays still", async ({ page, isMobile }) => {
+    test.skip(isMobile, "desktop");
+    await serveMounts(page, mounts(60, () => false));
+    await page.goto("mounts/");
+    await expect(page.locator(".tile").first()).toBeVisible();
+    await expect.poll(async () => page.evaluate(() => document.querySelectorAll(".tile.drawing").length)).toBeGreaterThan(0);
+    const counts = await page.evaluate(() => ({
+      drawing: document.querySelectorAll(".tile.drawing").length,
+      turning: document.getAnimations().filter((a) => (a as CSSAnimation).animationName === "spin").length,
+    }));
+    expect(counts.drawing).toBeLessThanOrEqual(3);
+    expect(counts.turning).toBeLessThanOrEqual(3);
   });
 
   test("the page does nothing at rest: no animation frame is asked for", async ({ page, isMobile }) => {
@@ -406,7 +480,7 @@ test.describe("the wardrobe's cells", () => {
     expect(await cls(page)).toBe(0);
   });
 
-  test("sets are whole figures, their names under them, big enough to read", async ({ page, isMobile }) => {
+  test("sets are whole figures, named along the foot of the card as Eclipse does, big enough to read", async ({ page, isMobile }) => {
     test.skip(isMobile, "desktop");
     await serve(page, withPosters());
     await openRoom(page);
@@ -416,8 +490,14 @@ test.describe("the wardrobe's cells", () => {
     await expect(set.locator(".tile-poster")).toHaveAttribute("src", /objects\/c+[0-9a-f]+\.webp/);
     const art = (await set.boundingBox())!;
     const name = (await set.locator(".tile-name").boundingBox())!;
-    expect(name.y).toBeGreaterThanOrEqual(art.y + art.height);
+    expect(name.y).toBeGreaterThan(art.y + art.height / 2);
+    expect(name.y + name.height).toBeLessThanOrEqual(art.y + art.height);
     expect(art.width).toBeGreaterThan(90);
+    // One line, the rest of a long name in the tip.
+    expect(await set.locator(".tile-name").evaluate((e) => getComputedStyle(e).whiteSpace)).toBe("nowrap");
+    // An item carries no text at all: its name is the tip's.
+    await page.locator('[data-tab-btn="items"]').click();
+    await expect(page.locator(".grid-row:not([hidden]) .tile:not(.hide):not(.set) .tile-name").first()).toHaveText("");
   });
 
   test("hover tries it on the stage and wakes one live cell on the current body; leaving lets go of both", async ({ page, isMobile }) => {

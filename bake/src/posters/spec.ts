@@ -12,7 +12,7 @@ export interface PosterSpec {
  * A poster's stage, on its own and not in the baker's version: a framing change redraws
  * posters, and leaves every model and item as baked.
  */
-export const POSTER_STAGE = 1;
+export const POSTER_STAGE = 2;
 export const POSTER_BAKER = `poster${POSTER_STAGE}`;
 /** The neutral body an armour poster stands on. */
 export const POSTER_BODIES = { male: "human-male", female: "human-female" } as const;

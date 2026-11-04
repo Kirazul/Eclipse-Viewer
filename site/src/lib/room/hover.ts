@@ -95,7 +95,8 @@ export function hover(target: HoverTarget | null) {
 export function endHover() {
   clearTimeout(timer);
   pending = null;
-  commit();
+  // No preview up: nothing to end, and the camera stays where it is.
+  if (shown) commit();
 }
 
 /** The click landed: the slot is worn now, so the preview must not take it away again. */

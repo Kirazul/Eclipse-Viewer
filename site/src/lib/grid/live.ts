@@ -1,7 +1,8 @@
 /**
  * The poster comes alive under a resting pointer. One live cell at a time, in one shared
- * WebGL context: it takes over after a rest, the poster stays until its first frame has
- * drawn, and leaving hands back in one step. Nothing runs when no pointer rests.
+ * WebGL context whose canvas stands inside the card: it scrolls with the card and cannot draw
+ * outside it. It takes over after a rest, the poster stays until its first frame has drawn,
+ * and leaving hands back in one step. Nothing runs when no pointer rests.
  */
 export const LIVE_REST_MS = 150;
 
@@ -10,6 +11,7 @@ export interface LiveOptions {
   itemId?: string;
   setId?: string;
   effects?: boolean;
+  inCell?: boolean;
   onDrawn?: () => void;
   onFailed?: (err: unknown) => void;
 }
@@ -35,6 +37,7 @@ export class LiveCell {
       this.drop = add(el, {
         ...opts,
         effects: true,
+        inCell: true,
         // In the frame the canvas has its first picture: no frame shows neither.
         onDrawn: () => {
           if (this.el === el) el.classList.add("live");

@@ -22,6 +22,8 @@ interface Ask {
 }
 
 const KEPT = 400;
+/** On the card while its picture is being drawn: only that ring turns. */
+const DRAWING = "drawing";
 
 export class FillQueue {
   private readonly done = new Map<string, string | null>();
@@ -29,10 +31,14 @@ export class FillQueue {
   private readonly wanted = new Map<HTMLElement, { key: string; give(url: string | null): void }>();
   private readonly running = new Set<string>();
 
-  /** `drawer` answers null until it can draw at all: `pump` starts the queue when it can. */
+  /**
+   * `drawer` answers null until it can draw at all: `pump` starts the queue when it can.
+   * `free` says the page has a moment: during a scroll nothing starts, top of the page stays first.
+   */
   constructor(
     private readonly drawer: () => DrawPoster | null | Promise<DrawPoster | null>,
     private readonly limit = 3,
+    private readonly free: () => boolean = () => true,
   ) {}
 
   /** The card wants this picture. `give` hears the image, or null when it can't be drawn. */
@@ -47,21 +53,24 @@ export class FillQueue {
       return;
     }
     this.wanted.set(el, { key, give });
-    if (!this.running.has(key)) this.waiting.push({ el, key, spec, width, height });
+    if (this.running.has(key)) el.classList?.add(DRAWING);
+    else this.waiting.push({ el, key, spec, width, height });
     this.pump();
   }
 
   /** The card scrolled away, or is something else now. */
   drop(el: HTMLElement): void {
     if (!this.wanted.delete(el)) return;
+    el.classList?.remove(DRAWING);
     const i = this.waiting.findIndex((a) => a.el === el);
     if (i >= 0) this.waiting.splice(i, 1);
   }
 
   pump(): void {
-    while (this.running.size < this.limit && this.waiting.length) {
+    while (this.free() && this.running.size < this.limit && this.waiting.length) {
       const ask = this.waiting.shift()!;
       this.running.add(ask.key);
+      for (const [el, w] of this.wanted) if (w.key === ask.key) el.classList?.add(DRAWING);
       void this.draw(ask);
     }
   }
@@ -76,6 +85,7 @@ export class FillQueue {
     if (!drawer) {
       // Not yet: it goes back, and whoever calls `pump` next starts it.
       this.running.delete(ask.key);
+      for (const [el, w] of this.wanted) if (w.key === ask.key) el.classList?.remove(DRAWING);
       this.waiting.unshift(ask);
       return;
     }
@@ -90,6 +100,7 @@ export class FillQueue {
     for (const [el, w] of this.wanted) {
       if (w.key !== ask.key) continue;
       this.wanted.delete(el);
+      el.classList?.remove(DRAWING);
       w.give(url);
     }
     // A breath between pictures: the page gets a frame in.

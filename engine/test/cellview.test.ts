@@ -12,7 +12,7 @@ import {
   weaponView,
   windowExtents,
   type Basis,
-} from "../src/logic/cellView";
+ silhouetteBounds } from "../src/logic/cellView";
 
 const dot = (a: readonly number[], b: readonly number[]) => a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
 const cross = (a: readonly number[], b: readonly number[]) => [a[1]! * b[2]! - a[2]! * b[1]!, a[2]! * b[0]! - a[0]! * b[2]!, a[0]! * b[1]! - a[1]! * b[0]!];
@@ -172,5 +172,56 @@ describe("fitting a silhouette", () => {
     const e = creatureExtents(rest, posed, b);
     expect(e[3] - e[0]).toBeCloseTo(1, 5);
     expect(e[0]).toBeCloseTo(0, 5);
+  });
+});
+
+describe("a silhouette's real reach", () => {
+  const W = 100;
+  const H = 120;
+  const canvas = () => new Uint8Array(W * H * 4);
+  const fill = (px: Uint8Array, x0: number, y0: number, x1: number, y1: number, rgba: [number, number, number, number]) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) px.set(rgba, (y * W + x) * 4);
+  };
+
+  test("an empty frame has none", () => {
+    expect(silhouetteBounds(canvas(), W, H)).toBeNull();
+  });
+
+  test("it is the drawn pixels' box, to the pixel", () => {
+    const px = canvas();
+    fill(px, 20, 30, 70, 90, [10, 10, 10, 255]);
+    expect(silhouetteBounds(px, W, H)).toEqual({ x0: 20, y0: 30, x1: 70, y1: 90 });
+  });
+
+  test("a glow is colour with no alpha of its own, and it counts", () => {
+    const px = canvas();
+    fill(px, 40, 40, 60, 60, [0, 0, 0, 255]);
+    fill(px, 61, 40, 90, 60, [0, 200, 0, 0]);
+    expect(silhouetteBounds(px, W, H)!.x1).toBe(90);
+  });
+
+  test("what barely shows does not", () => {
+    const px = canvas();
+    fill(px, 40, 40, 60, 60, [0, 0, 0, 255]);
+    fill(px, 61, 40, 90, 60, [0, 10, 0, 10]);
+    expect(silhouetteBounds(px, W, H)!.x1).toBe(60);
+  });
+
+  test("a far small orb doesn't shrink the animal, and a part of real size does count", () => {
+    const px = canvas();
+    fill(px, 20, 60, 80, 110, [0, 0, 0, 255]);
+    // Well apart, and tiny: a storm orb over a gryphon.
+    fill(px, 48, 2, 52, 6, [255, 255, 255, 255]);
+    expect(silhouetteBounds(px, W, H)!.y0).toBe(60);
+    // Well apart, and a part of it: a wing the pose holds off the body.
+    fill(px, 20, 2, 80, 30, [0, 0, 0, 255]);
+    expect(silhouetteBounds(px, W, H)!.y0).toBe(2);
+  });
+
+  test("a thin thing joined on counts whatever its size: a tail, a beam", () => {
+    const px = canvas();
+    fill(px, 20, 60, 80, 110, [0, 0, 0, 255]);
+    fill(px, 50, 2, 50, 59, [255, 255, 255, 255]);
+    expect(silhouetteBounds(px, W, H)!.y0).toBe(2);
   });
 });

@@ -1,20 +1,24 @@
 /**
- * Live 3D grid cells: one page-wide canvas and one WebGL context over the grid, each
- * visible cell drawn into its own rectangle by scissor (three.js's multiple-elements
- * approach). Cells on one body share its geometry, textures, programs, skeleton and
- * pose; what differs per cell is which parts show, the composite, the pieces.
+ * Live 3D grid cells: one WebGL context, shared. Cells on one body share its geometry,
+ * textures, programs, skeleton and pose; what differs per cell is which parts show, the
+ * composite, the pieces.
  *
- * The drawing buffer is preserved, so a cell not redrawn this frame keeps its pixels.
- * That is the rate cap: with many visible, only a budget of cells redraws per frame,
- * round robin, and the budget shrinks if the pass takes too long. The main stage has
- * its own context, so the cost it feels here is main-thread time only.
+ * A grid is posters, and the one cell the pointer rests on comes alive: `inCell` puts the
+ * canvas inside that card. It is the card's own child, its size, so the compositor scrolls
+ * them as one and it cannot draw anywhere else, whatever the main thread is doing.
  *
- * A grid is posters, and the one cell the pointer rests on comes alive here. `capture`
- * is what bakes those posters, through this same code: same pose, same camera, same
+ * Without `inCell` the canvas lies over the page and each visible cell draws into its own
+ * rectangle by scissor (three.js's multiple-elements approach). Its buffer is preserved, so
+ * a cell not redrawn this frame keeps its pixels: that is the rate cap, a budget of cells
+ * per frame, round robin. A scrolled page outruns such a canvas by a frame or more, so this
+ * is for figures on a page that holds still.
+ *
+ * `capture` is what bakes the posters, through this same code: same pose, same camera, same
  * materials, so the first live frame and the poster are one picture.
  */
 import {
   LinearFilter,
+  LinearSRGBColorSpace,
   Matrix4,
   NoToneMapping,
   PerspectiveCamera,
@@ -34,6 +38,7 @@ import { FrameStatsRing } from "../logic/frameStats";
 import {
   CELL_FILL,
   VIEW_ROWS,
+  WHOLE_FIGURE,
   addToExtents,
   basisOfAngles,
   basisOfRows,
@@ -41,6 +46,7 @@ import {
   creatureExtents,
   emptyExtents,
   fitExtents,
+  silhouetteBounds,
   validExtents,
   weaponView,
   windowExtents,
@@ -57,6 +63,7 @@ import { Figure } from "../model/figure";
 import { CompositeRenderer } from "../wow/composite";
 import { ItemLibrary, disposeItem, planOutfit, type Piece, type ResolvedItem } from "../wow/outfit";
 import { FigureEmitters } from "./emitters";
+import { linkInBackground, nextTask } from "./linking";
 import { FX_CLOCK } from "./particlesSim";
 
 interface SharedBody {
@@ -82,6 +89,14 @@ interface SharedBody {
   height: number;
   /** When it last stopped being drawn: the longest idle goes first. */
   idleSince: number;
+  /** What each look measured, so a poster and the live cell over it stand in one place. */
+  fits: Map<string, Silhouette>;
+}
+
+/** Where a look's real pixels reach, along its view's right and up. */
+interface Silhouette {
+  right: [number, number];
+  up: [number, number];
 }
 
 interface BodySlot {
@@ -118,6 +133,8 @@ interface Cell {
   drawn: boolean;
   /** The item has nothing to show on this body: a poster of it would be a bare figure. */
   nothing: boolean;
+  /** Its look's measured silhouette, when the look frames by one. */
+  fit: Silhouette | null;
   onScreen: boolean;
   ready: boolean;
   needsDraw: boolean;
@@ -136,6 +153,8 @@ export interface CellOptions {
   pieces?: Partial<Record<SlotId, string>>;
   /** Particles and ribbons run here too: for the one live cell over a poster. */
   effects?: boolean;
+  /** The canvas stands inside `el`, which must be positioned: for the one live cell over a poster. */
+  inCell?: boolean;
   /** The first frame this cell drew, in the frame it draws: the poster over it can go now. */
   onDrawn?: () => void;
   /** It will not draw: whatever stands in for it stays. */
@@ -157,6 +176,14 @@ const WARM_SECONDS = 2;
 const WARM_STEP = 1 / 15;
 /** Enough of a model's vertices to know its silhouette, cheaply on the frame it goes live. */
 const SILHOUETTE_SAMPLES = 6000;
+/** A silhouette is measured this wide: a pixel is under 1% of a cell, well inside its margin. */
+const MEASURE_WIDTH = 160;
+/** How far past the first guess a measure looks, and how often it steps back further. */
+const MEASURE_ROOM = 1.6;
+const MEASURE_TRIES = 3;
+const FITS_KEPT = 48;
+/** The shape every look is measured on: retail's card. Only its reach is kept, so a set's card can share it. */
+const CARD_ASPECT = 100 / 132;
 const _size = new Vector2();
 const _v = new Vector3();
 
@@ -183,18 +210,20 @@ export class FigureCells {
   private readonly resizeListener = () => this.fitCanvas();
   /** Off-screen frames of a poster: what they draw never touches the canvas over the page. */
   private readonly targets = new Map<string, WebGLRenderTarget>();
+  /** Where the canvas is: lying over the page, inside this one card, or neither. */
+  private over = false;
+  private host: Cell | null = null;
+  /** What asks the GPU for an answer goes one at a time, each after the last has finished. */
+  private turn: Promise<unknown> = Promise.resolve();
+  /** The page says when to leave the GPU and the main thread alone: a scroll, say. */
+  hold: () => boolean = () => false;
 
   constructor(base: string) {
     const canvas = document.createElement("canvas");
     canvas.dataset.eclipseCells = "";
-    Object.assign(canvas.style, {
-      position: "absolute",
-      top: "0",
-      left: "0",
-      zIndex: "5",
-      pointerEvents: "none",
-      willChange: "transform",
-    });
+    // Out of the page until a cell shows: drawing a poster never puts a layer over the grid.
+    canvas.style.display = "none";
+    canvas.style.pointerEvents = "none";
     document.body.appendChild(canvas);
     this.canvas = canvas;
 
@@ -206,8 +235,12 @@ export class FigureCells {
       preserveDrawingBuffer: true,
     });
     renderer.toneMapping = NoToneMapping;
+    // A render target always outputs linear, and a program is keyed on that: with the canvas the
+    // same, a poster and the live cell run one program. These shaders convert nothing either way.
+    renderer.outputColorSpace = LinearSRGBColorSpace;
     renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(1, 1, false);
     renderer.autoClear = false;
     renderer.setScissorTest(true);
     this.renderer = renderer;
@@ -224,7 +257,6 @@ export class FigureCells {
       this.ensureLoop();
     });
     window.addEventListener("resize", this.resizeListener);
-    this.fitCanvas();
   }
 
   private cellOf(el: Element): Cell | undefined {
@@ -233,19 +265,62 @@ export class FigureCells {
   }
 
   private fitCanvas(): void {
+    if (!this.over) return;
     const w = document.documentElement.clientWidth;
     const h = document.documentElement.clientHeight;
     const size = this.renderer.getSize(_size);
     if (size.x !== w || size.y !== h) {
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       this.renderer.setSize(w, h);
       // The buffer is new and empty: everything visible draws this frame.
       for (const c of this.cells) c.needsDraw = c.onScreen;
     }
   }
 
+  /** The canvas over the page, for cells drawn by scissor. */
+  private lieOverPage(): void {
+    if (this.over) return;
+    if (this.host) this.stepOut();
+    this.over = true;
+    Object.assign(this.canvas.style, { display: "block", position: "absolute", top: "0", left: "0", zIndex: "5", willChange: "transform", transform: "none" });
+    this.scrollX = this.scrollY = -1;
+    this.fitCanvas();
+  }
+
+  /**
+   * The canvas inside its card, at the card's size in device pixels. The buffer is only
+   * touched when that size changes; the browser's zoom counts, as it changes the pixels too.
+   */
+  private standIn(cell: Cell, rect: DOMRect): void {
+    const canvas = this.canvas;
+    if (this.host !== cell) {
+      this.host = cell;
+      cell.el.appendChild(canvas);
+      Object.assign(canvas.style, { display: "block", position: "absolute", top: "0", left: "0", width: "100%", height: "100%", zIndex: "1", willChange: "auto", transform: "none" });
+    }
+    const k = Math.min(window.devicePixelRatio, 2);
+    const w = Math.max(1, Math.round(rect.width * k));
+    const h = Math.max(1, Math.round(rect.height * k));
+    const r = this.renderer;
+    if (canvas.width !== w || canvas.height !== h) r.setDrawingBufferSize(w, h, 1);
+    r.setViewport(0, 0, w, h);
+    r.setScissor(0, 0, w, h);
+  }
+
+  /** Back out of the page, empty: the next card's first frame is the first thing it shows. */
+  private stepOut(): void {
+    const r = this.renderer;
+    r.setScissor(0, 0, this.canvas.width, this.canvas.height);
+    r.clear(true, true, false);
+    this.host = null;
+    this.canvas.style.display = "none";
+    document.body.appendChild(this.canvas);
+  }
+
   add(el: HTMLElement, opts: CellOptions): () => void {
     const cell = this.makeCell(el, opts);
     this.cells.add(cell);
+    if (!opts.inCell) this.lieOverPage();
     this.observer.observe(el);
     void this.prepareCell(cell).catch((err) => {
       if (isAbort(err) || cell.removed) return;
@@ -274,13 +349,14 @@ export class FigureCells {
       warmed: false,
       drawn: false,
       nothing: false,
+      fit: null,
       onScreen: false,
       ready: false,
       needsDraw: false,
       width: 0,
       height: 0,
       rect: null,
-      clip: clippingAncestors(el),
+      clip: opts.inCell ? [] : clippingAncestors(el),
       removed: false,
     };
   }
@@ -290,8 +366,14 @@ export class FigureCells {
     cell.removed = true;
     this.cells.delete(cell);
     this.observer.unobserve(cell.el);
-    this.clearCell(cell);
+    if (this.host === cell) this.stepOut();
+    else if (this.over) this.clearCell(cell);
     this.leave(cell);
+    // No figure left to show: nothing lies over the page.
+    if (this.over && ![...this.cells].some((c) => c.el.isConnected)) {
+      this.over = false;
+      this.canvas.style.display = "none";
+    }
   }
 
   /** The cell's claim on what it asked for ends. */
@@ -383,6 +465,7 @@ export class FigureCells {
       minY: 0,
       height: 0,
       idleSince: 0,
+      fits: new Map(),
     };
 
     const c = assets.manifest.composite;
@@ -410,7 +493,7 @@ export class FigureCells {
     gateSkeleton(figure.skeleton, shared);
 
     for (const t of figure.allTextures()) this.renderer.initTexture(t);
-    await this.renderer.compileAsync(figure.root, new PerspectiveCamera(), scene);
+    await this.compile(figure.root, new PerspectiveCamera(), scene);
     return shared;
   }
 
@@ -481,7 +564,7 @@ export class FigureCells {
         piece.parent?.add(piece.node);
         body.scene.updateMatrixWorld(true);
         for (const t of piece.figure.allTextures()) this.renderer.initTexture(t);
-        await this.renderer.compileAsync(piece.node, cell.camera, body.scene);
+        await this.compile(piece.node, cell.camera, body.scene);
       }
     }
     if (cell.removed) return;
@@ -503,9 +586,148 @@ export class FigureCells {
     }
     if (cell.opts.effects) await this.prepareEffects(cell, plan.pieces);
     if (cell.removed) return;
+    await this.measureLook(cell);
+    if (cell.removed) return;
     cell.ready = true;
     cell.needsDraw = cell.onScreen;
     this.ensureLoop();
+  }
+
+  private compile(node: Parameters<WebGLRenderer["compileAsync"]>[0], camera: PerspectiveCamera, scene: Scene): Promise<void> {
+    return linkInBackground(
+      this.renderer,
+      () => this.renderer.compileAsync(node, camera, scene),
+      (work) => this.inTurn(work),
+    );
+  }
+
+  /**
+   * A synchronous answer from the GPU process waits behind everything already sent to it, so
+   * a read that comes after another poster's draw stops the page for that whole draw: 200 ms,
+   * measured. In turns there is nothing ahead of it. A turn waits for the page to have a
+   * moment, and gives way to whatever input and frames are waiting first.
+   */
+  private inTurn<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.turn.then(async () => {
+      await nextTask();
+      while (this.hold()) await new Promise((r) => setTimeout(r, 40));
+      return work();
+    });
+    this.turn = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Where the look's real pixels reach. Vertices can't say: a flame is a quad mostly
+   * transparent, a wing is blended, a tail hangs on a bone the sampled pose leaves out. So it
+   * draws once, small and unseen, at the frame a poster shows, and reads what came out.
+   * Effects stay out: they run on their own dice, and a poster and its live cell have to
+   * get the same answer.
+   */
+  private async measureLook(cell: Cell): Promise<void> {
+    const body = cell.body;
+    const look = cell.look;
+    if (!body || !look) return;
+    // A slot's window crops the figure on purpose: that is what it is looking at.
+    if (look.kind === "window" && look.window !== WHOLE_FIGURE) return;
+    const key = `${look.kind === "alone" ? look.view : "whole"}|${cell.wanted.join()}`;
+    let fit = body.fits.get(key);
+    if (!fit) {
+      await waitForTextures([body.figure, ...cell.pieces.map((p) => p.figure)], cell.visibleGeosets);
+      if (cell.removed) return;
+      const seen = await this.measureSilhouette(cell, body);
+      if (cell.removed || !seen) return;
+      if (body.fits.size >= FITS_KEPT) body.fits.clear();
+      body.fits.set(key, seen);
+      fit = seen;
+    }
+    cell.fit = fit;
+  }
+
+  private async measureSilhouette(cell: Cell, body: SharedBody): Promise<Silhouette | null> {
+    const look = cell.look!;
+    const basis = look.kind === "alone" ? basisOfRows(VIEW_ROWS[look.view]) : basisOfAngles(look.window.azimuth);
+    const aspect = CARD_ASPECT;
+    const e = look.kind === "alone" ? creatureExtents(body.rest, body.posed, basis) : windowExtents(look.window, body.minY, body.height, bandMiddle(body, basis, look.window), aspect, basis);
+    if (!validExtents(e)) return null;
+    const w = MEASURE_WIDTH;
+    const h = Math.round(w / aspect);
+    const target = this.measureTarget(w, h);
+    const camera = new PerspectiveCamera(CAMERA.fov, aspect, 0.1, 100);
+    const pixels = new Uint8Array(w * h * 4);
+    const b = body.figure.assets.manifest.bounds;
+    const reach = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) + Math.max(e[3] - e[0], e[4] - e[1], e[5] - e[2]);
+    let centre: [number, number] = [(e[0] + e[3]) / 2, (e[1] + e[4]) / 2];
+    let half = Math.max((e[4] - e[1]) / 2, (e[3] - e[0]) / 2 / aspect);
+    let room = MEASURE_ROOM;
+    _axisX.set(...basis.right);
+    _axisY.set(...basis.up);
+    _axisZ.set(...basis.back);
+    camera.quaternion.setFromRotationMatrix(_m.makeBasis(_axisX, _axisY, _axisZ));
+    for (let tries = 0; tries < MEASURE_TRIES; tries++) {
+      // Far enough for everything to be in front of it, and what it sees at that distance.
+      const tan = Math.tan((CAMERA.fov * Math.PI) / 360);
+      const distance = (half * room) / tan + reach;
+      const halfH = tan * distance;
+      const halfW = halfH * aspect;
+      camera.position
+        .copy(_axisX)
+        .multiplyScalar(centre[0])
+        .addScaledVector(_axisY, centre[1])
+        .addScaledVector(_axisZ, (e[2] + e[5]) / 2 + distance);
+      camera.near = Math.max(0.05, distance - reach * 2);
+      camera.far = distance + reach * 2;
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld();
+      await this.inTurn(async () => {
+        if (cell.removed) return;
+        this.atFirstFrame(body, () => {
+          const r = this.renderer;
+          r.setRenderTarget(target);
+          r.clear(true, true, false);
+          this.drawContents(cell, body, camera, false);
+          r.setRenderTarget(null);
+        });
+        await this.readBack(target, w, h, pixels);
+      });
+      if (cell.removed) return null;
+      // Bottom row first, as the buffer holds it, and `up` runs the same way.
+      const box = silhouetteBounds(pixels, w, h);
+      if (!box) return null;
+      const seen: Silhouette = {
+        right: [centre[0] + (box.x0 / w - 0.5) * 2 * halfW, centre[0] + ((box.x1 + 1) / w - 0.5) * 2 * halfW],
+        up: [centre[1] + (box.y0 / h - 0.5) * 2 * halfH, centre[1] + ((box.y1 + 1) / h - 0.5) * 2 * halfH],
+      };
+      // It touches the edge of what it looked at: there is more past it, so it looks again.
+      const more = box.x0 === 0 || box.y0 === 0 || box.x1 === w - 1 || box.y1 === h - 1;
+      if (!more || tries === MEASURE_TRIES - 1) return seen;
+      centre = [(seen.right[0] + seen.right[1]) / 2, (seen.up[0] + seen.up[1]) / 2];
+      half = Math.max((seen.up[1] - seen.up[0]) / 2, (seen.right[1] - seen.right[0]) / 2 / aspect);
+      room *= 2;
+    }
+    return null;
+  }
+
+  private measureTarget(w: number, h: number): WebGLRenderTarget {
+    const key = `measure ${w}x${h}`;
+    let target = this.targets.get(key);
+    if (!target) {
+      target = new WebGLRenderTarget(w, h, { depthBuffer: true });
+      this.targets.set(key, target);
+    }
+    return target;
+  }
+
+  /** Runs `draw` with the body at its clip's first frame, whatever a live cell on it is showing. */
+  private atFirstFrame(body: SharedBody, draw: () => void): void {
+    const resume = body.action?.time ?? 0;
+    if (body.action) body.action.time = 0;
+    body.figure.mixer.update(0);
+    body.stamp = ++this.stamp;
+    body.figure.poseNow();
+    body.scene.updateMatrixWorld(true);
+    draw();
+    if (body.action) body.action.time = resume;
   }
 
   /** A figure's emitters, off stage with their programs linked, hidden until this cell draws. */
@@ -523,7 +745,7 @@ export class FigureCells {
         }
         for (const t of made.textures()) this.renderer.initTexture(t);
         body.scene.updateMatrixWorld(true);
-        await this.renderer.compileAsync(made.root, cell.camera, body.scene);
+        await this.compile(made.root, cell.camera, body.scene);
         made.root.visible = false;
         if (cell.removed) return;
       }
@@ -576,21 +798,35 @@ export class FigureCells {
 
     const shown: Cell[] = [];
     for (const c of this.cells) if (c.onScreen && c.ready) shown.push(c);
-    if (shown.length === 0) return;
+    if (shown.length === 0) {
+      // The last of them scrolled away: what it drew doesn't stay on the page behind it.
+      if (this.over) {
+        this.renderer.setScissor(0, 0, this.renderer.getSize(_size).x, _size.y);
+        this.renderer.clear(true, true, false);
+      }
+      return;
+    }
     this.raf = requestAnimationFrame(this.frame);
     this.intervalStats.sample(started);
 
+    // One cell that asked to stand in its card, with nothing lying over the page.
+    const lone = shown.length === 1 && shown[0]!.opts.inCell && !this.over ? shown[0]! : null;
+
     // The canvas rides with the page: native scrolling keeps old pixels on their
     // cells between frames, and here it comes back to the viewport with fresh ones.
-    const sx = window.scrollX;
-    const sy = window.scrollY;
-    let moved = sx !== this.scrollX || sy !== this.scrollY;
-    if (moved) {
-      this.scrollX = sx;
-      this.scrollY = sy;
-      this.canvas.style.transform = `translate(${sx}px, ${sy}px)`;
+    let moved = false;
+    if (!lone) {
+      this.lieOverPage();
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+      moved = sx !== this.scrollX || sy !== this.scrollY;
+      if (moved) {
+        this.scrollX = sx;
+        this.scrollY = sy;
+        this.canvas.style.transform = `translate(${sx}px, ${sy}px)`;
+      }
+      this.fitCanvas();
     }
-    this.fitCanvas();
 
     // One pose per body and per piece, per frame.
     for (const c of shown) {
@@ -634,13 +870,23 @@ export class FigureCells {
         else runEffects(c, dt);
       }
     }
-    if (moved) {
+    if (moved && !lone) {
       this.renderer.setScissor(0, 0, this.renderer.getSize(_size).x, _size.y);
       this.renderer.clear(true, true, false);
     }
 
     let drawn = 0;
-    if (moved || shown.length <= CELLS.everyFrameUpTo) {
+    if (lone) {
+      this.standIn(lone, lone.rect!);
+      this.renderer.clear(true, true, false);
+      this.drawContents(lone, lone.body!);
+      lone.needsDraw = false;
+      drawn = 1;
+      if (!lone.drawn) {
+        lone.drawn = true;
+        lone.opts.onDrawn?.();
+      }
+    } else if (moved || shown.length <= CELLS.everyFrameUpTo) {
       for (const c of shown) {
         this.drawCell(c, c.rect!);
         drawn++;
@@ -690,7 +936,7 @@ export class FigureCells {
     }
   }
 
-  private drawContents(cell: Cell, body: SharedBody): void {
+  private drawContents(cell: Cell, body: SharedBody, camera: PerspectiveCamera = cell.camera, effects = true): void {
     const figure = body.figure;
     for (const part of figure.parts) {
       let painted = true;
@@ -708,14 +954,14 @@ export class FigureCells {
       }
     }
     for (const piece of cell.pieces) piece.node.visible = true;
-    for (const e of cell.emitters) e.root.visible = true;
-    this.renderer.render(body.scene, cell.camera);
+    if (effects) for (const e of cell.emitters) e.root.visible = true;
+    this.renderer.render(body.scene, camera);
     for (const piece of cell.pieces) piece.node.visible = false;
     for (const e of cell.emitters) e.root.visible = false;
   }
 
+  /** On screen or not: it may have scrolled away with its last frame still on the canvas. */
   private clearCell(cell: Cell): void {
-    if (!cell.onScreen) return;
     const h = this.renderer.getSize(_size).y;
     // Where it last drew and where it stands now: a scroller may have moved it since.
     for (const rect of cell.rect ? [cell.rect, cell.el.getBoundingClientRect()] : [cell.el.getBoundingClientRect()]) {
@@ -745,24 +991,22 @@ export class FigureCells {
       const h = height * supersample;
       const r = this.renderer;
       const target = this.targetOf(w, h);
-      // The first frame of the clip, whatever a live cell on this body is showing now.
-      const resume = body.action?.time ?? 0;
-      if (body.action) body.action.time = 0;
-      body.figure.mixer.update(0);
-      body.stamp = ++this.stamp;
-      body.figure.poseNow();
-      cell.width = width;
-      cell.height = height;
-      frameCell(cell, width, height);
-      body.scene.updateMatrixWorld(true);
-      if (cell.emitters.length) warmEffects(cell);
-      r.setRenderTarget(target);
-      r.clear(true, true, false);
-      this.drawContents(cell, body);
       const raw = new Uint8Array(w * h * 4);
-      r.readRenderTargetPixels(target, 0, 0, w, h, raw);
-      r.setRenderTarget(null);
-      if (body.action) body.action.time = resume;
+      await this.inTurn(async () => {
+        // The first frame of the clip, whatever a live cell on this body is showing now.
+        this.atFirstFrame(body, () => {
+          cell.width = width;
+          cell.height = height;
+          frameCell(cell, width, height);
+          if (cell.emitters.length) warmEffects(cell);
+          r.setRenderTarget(target);
+          r.clear(true, true, false);
+          this.drawContents(cell, body);
+          r.setRenderTarget(null);
+        });
+        // The GPU finishes in its own time and the page goes on: a sync read here stops it for 65 ms.
+        await this.readBack(target, w, h, raw);
+      });
       const pixels = new Uint8Array(raw.length);
       for (let y = 0; y < h; y++) pixels.set(raw.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
       return { width: w, height: h, pixels, nothing: cell.nothing };
@@ -771,6 +1015,14 @@ export class FigureCells {
       this.cells.delete(cell);
       this.leave(cell);
     }
+  }
+
+  /** three leaves its pack buffer bound while it waits, and any other read in that time would fail. */
+  private readBack(target: WebGLRenderTarget, w: number, h: number, into: Uint8Array): Promise<unknown> {
+    const done = this.renderer.readRenderTargetPixelsAsync(target, 0, 0, w, h, into);
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    return done;
   }
 
   private targetOf(w: number, h: number): WebGLRenderTarget {
@@ -985,13 +1237,24 @@ function frameCell(cell: Cell, width: number, height: number): void {
   let basis: Basis;
   let extents: Extents;
   let fill = 1;
+  const fit = cell.fit;
   if (look.kind === "alone") {
     basis = basisOfRows(VIEW_ROWS[look.view]);
     extents = creatureExtents(body.rest, body.posed, basis);
     fill = CELL_FILL;
+    if (fit) extents = [fit.right[0], fit.up[0], extents[2], fit.right[1], fit.up[1], extents[5]];
   } else {
     basis = basisOfAngles(look.window.azimuth);
     extents = windowExtents(look.window, body.minY, body.height, bandMiddle(body, basis, look.window), camera.aspect, basis);
+    // A whole figure keeps the size every figure has, unless something it wears reaches past it.
+    if (fit) {
+      const inset = ((extents[3] - extents[0]) * (1 - CELL_FILL)) / 2;
+      const inside = fit.right[0] >= extents[0] + inset && fit.right[1] <= extents[3] - inset && fit.up[0] >= extents[1] && fit.up[1] <= extents[4];
+      if (!inside) {
+        extents = [fit.right[0], fit.up[0], extents[2], fit.right[1], fit.up[1], extents[5]];
+        fill = CELL_FILL;
+      }
+    }
   }
   if (!validExtents(extents)) return;
   const at = fitExtents(extents, basis, camera.aspect, CAMERA.fov, fill);

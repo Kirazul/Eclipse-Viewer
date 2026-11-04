@@ -185,6 +185,11 @@ export class Figure {
 
       const skinned = mesh as SkinnedMesh;
       if (skinned.isSkinnedMesh) {
+        // Nothing culls these and every batch has its own render order, so the sphere only feeds
+        // a depth sort that never decides. three would skin every vertex on the CPU for it, on the
+        // first frame: 300 ms on a big mount, measured. The file's own bounds answer for free.
+        const sphere = (mesh.geometry as BufferGeometry).boundingSphere;
+        if (sphere) skinned.boundingSphere = sphere;
         // Primitives of one skin share one bone texture.
         if (!this.skeleton) this.skeleton = skinned.skeleton;
         else if (sameBones(this.skeleton, skinned.skeleton)) {
