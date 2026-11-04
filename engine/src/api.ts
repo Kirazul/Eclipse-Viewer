@@ -67,6 +67,19 @@ export interface ViewerEngine {
   // Customization (bodies). Geosets toggle instantly; textures re-composite once.
   setGeoset(group: number, value: number): void;
 
+  // Dressing room (Eclipse's wardrobe). Hover tries on, click wears, ring releases.
+  /** Commit a slot. null releases it. */
+  equip(slot: import("@eclipse/format").SlotId, itemId: string | null): Promise<void>;
+  /** Show an item on the figure without committing. null ends the preview. */
+  previewEquip(slot: import("@eclipse/format").SlotId, itemId: string | null): Promise<void>;
+  /** Eases the camera to a slot's body region, or to the whole figure when null. */
+  focusSlot(slot: import("@eclipse/format").SlotId | null): void;
+  /**
+   * Live 3D grid cells: one shared WebGL context drawing every visible cell by
+   * scissor, so a page of figures costs no extra contexts. Returns a remove function.
+   */
+  addFigureCell(el: HTMLElement, opts: { bodyId?: string; itemId?: string; setId?: string }): () => void;
+
   // Export
   exportPNG(scale: number, trim: boolean): Promise<void>;
   exportSTL(): Promise<void>;

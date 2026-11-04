@@ -81,3 +81,16 @@ jobs:
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile --filter @eclipse/bake...
       - run: pnpm bake report --upload --github-summary "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: report
+    if: always() && needs.report.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      # Rebuild the site so the new catalogue goes live.
+      - run: gh workflow run site.yml -R "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}

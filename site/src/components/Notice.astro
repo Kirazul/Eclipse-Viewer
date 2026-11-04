@@ -1,0 +1,17 @@
+---
+/** UiKit.cpp Notice: a small card centred in its space, sized to its text. */
+import Glyph from "./Glyph.astro";
+interface Props {
+  title: string;
+  body?: string;
+}
+const { title, body } = Astro.props;
+---
+<div class="notice-center">
+  <div class="notice">
+    <Glyph name="hanger" />
+    <div class="notice-title">{title}</div>
+    {body && <p class="notice-body">{body}</p>}
+    <slot />
+  </div>
+</div>

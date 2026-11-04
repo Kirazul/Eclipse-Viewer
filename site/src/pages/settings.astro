@@ -1,0 +1,73 @@
+---
+import Shell from "../layouts/Shell.astro";
+
+// UiTheme.cpp kAccents.
+const accents = [
+  { id: "amber", label: "Amber", color: "#e8902e" },
+  { id: "azure", label: "Azure", color: "#5ca3f2" },
+  { id: "emerald", label: "Emerald", color: "#4dcc8a" },
+  { id: "violet", label: "Violet", color: "#a885f5" },
+  { id: "rose", label: "Rose", color: "#f0708f" },
+  { id: "cyan", label: "Cyan", color: "#4dd1d6" },
+];
+const themes = [
+  { id: "dark", label: "Dark" },
+  { id: "light", label: "Light" },
+  { id: "auto", label: "Auto" },
+];
+---
+<Shell title="Settings" subtitle="How Eclipse looks." nav="settings">
+  <div class="settings">
+    <section class="card">
+      <h2>Theme</h2>
+      <div class="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Theme">
+        {themes.map((t) => <button class="pill" type="button" role="radio" data-set-theme={t.id}>{t.label}</button>)}
+      </div>
+    </section>
+    <section class="card">
+      <h2>Accent</h2>
+      <div class="accent-row" role="radiogroup" aria-label="Accent">
+        {accents.map((a) => (
+          <button class="pill accent-btn" type="button" role="radio" data-set-accent={a.id} style={`--swatch:${a.color}`}><i></i>{a.label}</button>
+        ))}
+      </div>
+    </section>
+  </div>
+</Shell>
+
+<script>
+  import { setTheme } from "../lib/shell";
+
+  const read = (key: string, fallback: string) => {
+    try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+  };
+  const paint = () => {
+    const theme = read("theme", "dark");
+    const accent = read("accent", "amber");
+    for (const b of document.querySelectorAll<HTMLElement>("[data-set-theme]")) {
+      const on = b.dataset.setTheme === theme;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-checked", String(on));
+    }
+    for (const b of document.querySelectorAll<HTMLElement>("[data-set-accent]")) {
+      const on = b.dataset.setAccent === accent;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-checked", String(on));
+    }
+  };
+  paint();
+  document.addEventListener("click", (e) => {
+    const t = (e.target as Element).closest<HTMLElement>("[data-set-theme],[data-set-accent]");
+    if (!t) return;
+    if (t.dataset.setTheme) setTheme(t.dataset.setTheme as "dark" | "light" | "auto");
+    if (t.dataset.setAccent) {
+      const root = document.documentElement;
+      root.classList.add("no-tr");
+      root.dataset.accent = t.dataset.setAccent;
+      try { localStorage.setItem("accent", t.dataset.setAccent); } catch { /* private window */ }
+      requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("no-tr")));
+    }
+    paint();
+  });
+  document.getElementById("theme-btn")?.addEventListener("click", paint);
+</script>

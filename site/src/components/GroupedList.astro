@@ -1,0 +1,37 @@
+---
+import type { CatalogEntry } from "@eclipse/format";
+import { byLetter } from "../data/catalog";
+import { art } from "../lib/base";
+
+interface Props {
+  entries: CatalogEntry[];
+  /** Where an entry leads; null renders it dimmed, unlinked. */
+  link: (entry: CatalogEntry) => string | null;
+}
+const { entries, link } = Astro.props;
+const groups = byLetter(entries);
+---
+<div class="page-card">
+  {groups.map((g) => (
+    <section class="letter-group">
+      <div class="letter"><a href={`#${g.letter.toLowerCase()}-0`}>{g.letter}</a></div>
+      <div class="circle-grid">
+        {g.entries.map((e, i) => {
+          const href = link(e);
+          const id = `${g.letter.toLowerCase()}-${i}`;
+          return href ? (
+            <a class="circle-link" id={id} href={href} data-astro-prefetch>
+              <img src={art(e.circle)} alt="" width="50" height="50" loading="lazy" decoding="async" />
+              {e.name}
+            </a>
+          ) : (
+            <div class="circle-link not-baked" id={id} title="Not baked yet">
+              <img src={art(e.circle)} alt="" width="50" height="50" loading="lazy" decoding="async" />
+              {e.name}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  ))}
+</div>

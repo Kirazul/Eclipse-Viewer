@@ -1,0 +1,72 @@
+---
+import { ChevronRight, Download, Eye, Zap } from "lucide-react";
+import Shell from "../layouts/Shell.astro";
+import FallbackNote from "../components/FallbackNote.astro";
+import { FEATURED, latestAdditions } from "../data/catalog";
+import { art, sprite, u, wardrobeHref } from "../lib/base";
+
+const additions = latestAdditions();
+const href = (row: { entry: { id: string }; href: "body" | "item" }) =>
+  row.href === "item" ? `${u("wardrobe/")}?try=${encodeURIComponent(row.entry.id)}` : wardrobeHref(row.entry.id);
+---
+<Shell title="Eclipse" subtitle="World of Warcraft's races, mounts and items in 3D, right in your browser." nav="home">
+  <div class="home-hero">
+    <div>
+      <div class="feature-grid">
+        <div class="card feature">
+          <h2><Eye aria-hidden="true" />See every detail</h2>
+          <p>Turn, zoom and pause any model. Dress it up, hide its parts, and look closer than the game lets you.</p>
+        </div>
+        <div class="card feature">
+          <h2><Download aria-hidden="true" />Take it with you</h2>
+          <p>Save sharp stills and video of any pose, or export the model for 3D printing and your own projects.</p>
+        </div>
+        <div class="card feature">
+          <h2><Zap aria-hidden="true" />Light and quick</h2>
+          <p>Models are baked small and streamed only as you need them, so a body opens in seconds, even on a slow line.</p>
+        </div>
+      </div>
+      <div class="section-title">Start here</div>
+      <div class="flex flex-wrap gap-2">
+        <a class="btn fill" href={u("wardrobe/")} data-astro-prefetch>Open the wardrobe</a>
+        <a class="btn" href={u("races/")} data-astro-prefetch>Browse races</a>
+        <a class="btn" href={u("mounts/")} data-astro-prefetch>Browse mounts</a>
+      </div>
+
+      <div class="section-title" id="latest-additions">Latest additions</div>
+      {additions.length === 0 ? (
+        <p class="legal">New models show up here as they are baked.</p>
+      ) : additions.map((g) => (
+        <div>
+          <div class="group-label" style="margin-top:6px">Patch {g.label.split(".").slice(0, 2).join(".")}</div>
+          <div class="flex flex-wrap gap-3">
+            {g.entries.map((row) => (
+              <a class="body-tile" style="width:160px" href={href(row)} data-astro-prefetch>
+                <img src={art(row.entry.tile || row.entry.circle)} alt="" width="138" height="184" loading="lazy" decoding="async" />
+                <p>{row.entry.name}</p>
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+      <FallbackNote />
+      <p class="legal">Eclipse is a free fan project. It is not affiliated with or endorsed by Blizzard Entertainment. World of Warcraft and its game art belong to Blizzard.</p>
+    </div>
+    <div class="hero-stage" id="hero">
+      <img class="scene" src={sprite("scene-mage")} alt="" width="478" height="500" decoding="async" onerror="this.remove()" />
+      <canvas id="homepage-canvas" data-model={FEATURED?.id ?? ""}></canvas>
+      {FEATURED && (
+        <a class="shortcut" href={wardrobeHref(FEATURED.id)} data-astro-prefetch>
+          <img src={art(FEATURED.circle)} alt="" width="48" height="48" decoding="async" />
+          <div><b>{FEATURED.name}</b><i>View 3D model</i></div>
+          <ChevronRight aria-hidden="true" />
+        </a>
+      )}
+    </div>
+  </div>
+
+</Shell>
+
+<script>
+  import "../lib/home-boot";
+</script>

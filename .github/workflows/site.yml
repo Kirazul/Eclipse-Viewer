@@ -1,0 +1,47 @@
+# Tests and builds the site in the cloud, then publishes it to GitHub Pages.
+# Needs no keys: GitHub's own short-lived token does the deploy.
+name: Site
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**/*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      # The catalogue is whatever the last bake finished, so a bake updates the site.
+      - run: curl -fsS "https://pub-8475da48fc7347d690ebb4e8e0254fdd.r2.dev/catalog/catalog.json" -o site/src/data/catalog.json
+      - run: pnpm build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

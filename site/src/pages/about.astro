@@ -1,0 +1,16 @@
+---
+import Shell from "../layouts/Shell.astro";
+import { LINKS, u } from "../lib/base";
+---
+<Shell title="About" subtitle="What Eclipse is." nav={undefined}>
+  <div class="page-card prose">
+    <h2>A free fan project</h2>
+    <p>Eclipse lets you dress and study World of Warcraft's characters in 3D, right in the browser. Pick a body, try things on, pause on a pose, save a picture. Nothing to install, nothing to pay.</p>
+    <h2>Not affiliated with Blizzard</h2>
+    <p>Eclipse is made by fans. It is not affiliated with, endorsed by or sponsored by Blizzard Entertainment. World of Warcraft, its characters and its game art belong to Blizzard Entertainment, Inc.</p>
+    <h2>How it stays quick</h2>
+    <p>Each model is prepared ahead of time and split into small files, and your browser fetches only the ones it needs. Most of a page loads in the blink of an eye, and a second visit needs almost nothing from the network.</p>
+    <h2>Say hello</h2>
+    <p>Questions, ideas and bug reports are welcome on <a href={LINKS.discord} target="_blank" rel="noopener">Discord</a>. If you enjoy it, you can <a href={LINKS.support} target="_blank" rel="noopener">support the project on Ko-fi</a>. See also the <a href={u("privacy/")}>privacy notes</a>.</p>
+  </div>
+</Shell>

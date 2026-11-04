@@ -17,3 +17,8 @@ test-results/
 
 # Local only: research notes, never published.
 /docs/
+
+/tests/site/results/
+/tests/parity/dist/
+/tests/**/results/
+/tests/parity/

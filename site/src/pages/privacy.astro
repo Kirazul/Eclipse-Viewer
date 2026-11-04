@@ -1,0 +1,18 @@
+---
+import Shell from "../layouts/Shell.astro";
+import { LINKS } from "../lib/base";
+---
+<Shell title="Privacy" subtitle="Short version: Eclipse doesn't track you." nav={undefined}>
+  <div class="page-card prose">
+    <h2>What Eclipse keeps</h2>
+    <p>No accounts, no ads, no analytics, no cookies. Your theme, your accent, your starred items and which panels you left open stay in your own browser. You can clear them whenever you like by clearing this site's data.</p>
+    <h2>Files saved for speed</h2>
+    <p>A small service worker keeps the site's code and models in your browser, so the next visit opens quickly. It holds nothing about you.</p>
+    <h2>Who else sees a request</h2>
+    <p>The pages are hosted by GitHub Pages and the models by Cloudflare. Like any web host, they may keep short-lived server logs such as your IP address. Eclipse has no access to use them for anything.</p>
+    <h2>Links out</h2>
+    <p>Ko-fi and Discord are separate services with their own rules. They are only contacted if you follow a link to them.</p>
+    <h2>Game art</h2>
+    <p>Eclipse is a free fan project, not affiliated with Blizzard Entertainment. The game art shown here belongs to Blizzard. If something should come down, tell us on <a href={LINKS.discord} target="_blank" rel="noopener">Discord</a>.</p>
+  </div>
+</Shell>

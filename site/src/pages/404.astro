@@ -1,0 +1,13 @@
+---
+import Shell from "../layouts/Shell.astro";
+import Notice from "../components/Notice.astro";
+import { u } from "../lib/base";
+---
+<Shell title="Page not found" subtitle="That link doesn't lead anywhere." tabTitle="Not found | Eclipse">
+  <Notice title="Nothing here" body="This page may have moved. The wardrobe is still open.">
+    <div class="flex justify-center gap-2" style="margin-top:14px">
+      <a class="btn fill" href={u("wardrobe/")}>Open the wardrobe</a>
+      <a class="btn" href={u("")}>Home</a>
+    </div>
+  </Notice>
+</Shell>

@@ -1,0 +1,802 @@
+{
+ "formatVersion": 1,
+ "build": "12.1.0.69933",
+ "generatedAt": "2026-11-04T11:09:13.747Z",
+ "races": [
+  {
+   "id": "human",
+   "name": "Human",
+   "circle": "objects/316c6eeca6e95dc906c305f33fc57f92.webp",
+   "tile": "",
+   "raceId": 1,
+   "faction": "Alliance",
+   "group": "Core",
+   "description": "The noble humans of Stormwind stand at the forefront of the Alliance against the enemies of Azeroth.",
+   "bodies": [
+    {
+     "id": "human-male",
+     "name": "Human Male",
+     "circle": "objects/316c6eeca6e95dc906c305f33fc57f92.webp",
+     "tile": "",
+     "group": "human",
+     "model": "models/human-male/manifest.json"
+    },
+    {
+     "id": "human-female",
+     "name": "Human Female",
+     "circle": "objects/7a594e3afe713fe58777c0a027034aac.webp",
+     "tile": "",
+     "group": "human"
+    }
+   ],
+   "model": "models/human-male/manifest.json"
+  },
+  {
+   "id": "orc",
+   "name": "Orc",
+   "circle": "objects/a055518216ccd034f8f979fbaf9fe8ce.webp",
+   "tile": "",
+   "raceId": 2,
+   "faction": "Horde",
+   "group": "Core",
+   "description": "The mighty orcs came to Azeroth as conquerors, but now strive to reclaim their ancient honor and traditions.",
+   "bodies": [
+    {
+     "id": "orc-male",
+     "name": "Orc Male",
+     "circle": "objects/a055518216ccd034f8f979fbaf9fe8ce.webp",
+     "tile": "",
+     "group": "orc"
+    },
+    {
+     "id": "orc-female",
+     "name": "Orc Female",
+     "circle": "objects/bf9cab6e7592341e6d1160fe875b4f22.webp",
+     "tile": "",
+     "group": "orc"
+    },
+    {
+     "id": "orcupright-male",
+     "name": "Orc Male (Upright)",
+     "circle": "objects/a055518216ccd034f8f979fbaf9fe8ce.webp",
+     "tile": "",
+     "group": "orc"
+    }
+   ]
+  },
+  {
+   "id": "dwarf",
+   "name": "Dwarf",
+   "circle": "objects/7aecd18551e98272f7f147dedc857dbc.webp",
+   "tile": "",
+   "raceId": 3,
+   "faction": "Alliance",
+   "group": "Core",
+   "description": "The stout dwarves of Ironforge are famed explorers who delve into the world's ancient secrets.",
+   "bodies": [
+    {
+     "id": "dwarf-male",
+     "name": "Dwarf Male",
+     "circle": "objects/7aecd18551e98272f7f147dedc857dbc.webp",
+     "tile": "",
+     "group": "dwarf"
+    },
+    {
+     "id": "dwarf-female",
+     "name": "Dwarf Female",
+     "circle": "objects/1a4c32d0099dbf97863877034f136057.webp",
+     "tile": "",
+     "group": "dwarf"
+    }
+   ]
+  },
+  {
+   "id": "undead",
+   "name": "Undead",
+   "circle": "objects/2fbc5440c6662d273150454bdd29859c.webp",
+   "tile": "",
+   "raceId": 5,
+   "faction": "Horde",
+   "group": "Core",
+   "description": "Raised into undeath, the Forsaken have built a bold future out of the ruins of a darkened past.",
+   "bodies": [
+    {
+     "id": "undead-male",
+     "name": "Undead Male",
+     "circle": "objects/2fbc5440c6662d273150454bdd29859c.webp",
+     "tile": "",
+     "group": "undead"
+    },
+    {
+     "id": "undead-female",
+     "name": "Undead Female",
+     "circle": "objects/1d0c22adfeeea13e42beb9667e99a035.webp",
+     "tile": "",
+     "group": "undead"
+    }
+   ]
+  },
+  {
+   "id": "nightelf",
+   "name": "Night Elf",
+   "circle": "objects/f7efd194c4733f53a037876d0cd040fe.webp",
+   "tile": "",
+   "raceId": 4,
+   "faction": "Alliance",
+   "group": "Core",
+   "description": "The mystical night elves defend the wilds of Azeroth against any who mean harm to nature.",
+   "bodies": [
+    {
+     "id": "nightelf-male",
+     "name": "Night Elf Male",
+     "circle": "objects/f7efd194c4733f53a037876d0cd040fe.webp",
+     "tile": "",
+     "group": "nightelf"
+    },
+    {
+     "id": "nightelf-female",
+     "name": "Night Elf Female",
+     "circle": "objects/f1614d4663fb0eaca52efb881e0f71d0.webp",
+     "tile": "",
+     "group": "nightelf"
+    }
+   ]
+  },
+  {
+   "id": "tauren",
+   "name": "Tauren",
+   "circle": "objects/0cb7b9e68ea03644fb6b348dfe71c126.webp",
+   "tile": "",
+   "raceId": 6,
+   "faction": "Horde",
+   "group": "Core",
+   "description": "The massive tauren serve their beloved Earth Mother and protect the balance of nature.",
+   "bodies": [
+    {
+     "id": "tauren-male",
+     "name": "Tauren Male",
+     "circle": "objects/0cb7b9e68ea03644fb6b348dfe71c126.webp",
+     "tile": "",
+     "group": "tauren"
+    },
+    {
+     "id": "tauren-female",
+     "name": "Tauren Female",
+     "circle": "objects/e09a4dd5145a61a3d7f32246959dcc2b.webp",
+     "tile": "",
+     "group": "tauren"
+    }
+   ]
+  },
+  {
+   "id": "gnome",
+   "name": "Gnome",
+   "circle": "objects/01061895a86f5a040f3e1707d1576dac.webp",
+   "tile": "",
+   "raceId": 7,
+   "faction": "Alliance",
+   "group": "Core",
+   "description": "The diminutive and ingenious gnomes are renowned for creating countless technological wonders.",
+   "bodies": [
+    {
+     "id": "gnome-male",
+     "name": "Gnome Male",
+     "circle": "objects/01061895a86f5a040f3e1707d1576dac.webp",
+     "tile": "",
+     "group": "gnome"
+    },
+    {
+     "id": "gnome-female",
+     "name": "Gnome Female",
+     "circle": "objects/175253e2098383f27a15b3060aa34d77.webp",
+     "tile": "",
+     "group": "gnome"
+    }
+   ]
+  },
+  {
+   "id": "troll",
+   "name": "Troll",
+   "circle": "objects/9590b5e35dab002df394142086a54b7c.webp",
+   "tile": "",
+   "raceId": 8,
+   "faction": "Horde",
+   "group": "Core",
+   "description": "Driven from their jungle homeland by rival tribes, the Darkspear trolls found allies in the mighty Horde.",
+   "bodies": [
+    {
+     "id": "troll-male",
+     "name": "Troll Male",
+     "circle": "objects/9590b5e35dab002df394142086a54b7c.webp",
+     "tile": "",
+     "group": "troll"
+    },
+    {
+     "id": "troll-female",
+     "name": "Troll Female",
+     "circle": "objects/0d1f922719bb367c485f3b5d77613975.webp",
+     "tile": "",
+     "group": "troll"
+    }
+   ]
+  },
+  {
+   "id": "draenei",
+   "name": "Draenei",
+   "circle": "objects/a7a34f6330ba48a71ebc5086e14e35e0.webp",
+   "tile": "",
+   "raceId": 11,
+   "faction": "Alliance",
+   "group": "Core",
+   "description": "The draenei fled from demonic corruption and now lend their might to defend Azeroth.",
+   "bodies": [
+    {
+     "id": "draenei-male",
+     "name": "Draenei Male",
+     "circle": "objects/a7a34f6330ba48a71ebc5086e14e35e0.webp",
+     "tile": "",
+     "group": "draenei"
+    },
+    {
+     "id": "draenei-female",
+     "name": "Draenei Female",
+     "circle": "objects/b880e439ef3fcb185f1acb5149ac1adb.webp",
+     "tile": "",
+     "group": "draenei"
+    }
+   ]
+  },
+  {
+   "id": "bloodelf",
+   "name": "Blood Elf",
+   "circle": "objects/6791fa6c8b6b54af99d4f6679bcd5a43.webp",
+   "tile": "",
+   "raceId": 10,
+   "faction": "Horde",
+   "group": "Core",
+   "description": "Survivors of a brutal war, the blood elves drew strength from the magical Sunwell to rebuild their kingdom.",
+   "bodies": [
+    {
+     "id": "bloodelf-male",
+     "name": "Blood Elf Male",
+     "circle": "objects/6791fa6c8b6b54af99d4f6679bcd5a43.webp",
+     "tile": "",
+     "group": "bloodelf"
+    },
+    {
+     "id": "bloodelf-female",
+     "name": "Blood Elf Female",
+     "circle": "objects/5948a1e58ab6190252634a976a6ed383.webp",
+     "tile": "",
+     "group": "bloodelf"
+    }
+   ]
+  },
+  {
+   "id": "worgen",
+   "name": "Worgen",
+   "circle": "objects/97699083738a15c38313b82f08456fd0.webp",
+   "tile": "",
+   "raceId": 22,
+   "faction": "Alliance",
+   "group": "Core",
+   "description": "A curse turned the humans of Gilneas into savage worgen, who harness their ferocity to aid their allies.",
+   "bodies": [
+    {
+     "id": "worgen-male",
+     "name": "Worgen Male",
+     "circle": "objects/97699083738a15c38313b82f08456fd0.webp",
+     "tile": "",
+     "group": "worgen"
+    },
+    {
+     "id": "worgen-female",
+     "name": "Worgen Female",
+     "circle": "objects/c51cfdab63f5873eedf03eedb4ee91ba.webp",
+     "tile": "",
+     "group": "worgen"
+    }
+   ]
+  },
+  {
+   "id": "goblin",
+   "name": "Goblin",
+   "circle": "objects/36ee05274d976aaf59d1bcabe9fcee6d.webp",
+   "tile": "",
+   "raceId": 9,
+   "faction": "Horde",
+   "group": "Core",
+   "description": "Always inventive and often reckless, goblins are known as skilled engineers and talented merchants.",
+   "bodies": [
+    {
+     "id": "goblin-male",
+     "name": "Goblin Male",
+     "circle": "objects/36ee05274d976aaf59d1bcabe9fcee6d.webp",
+     "tile": "",
+     "group": "goblin"
+    },
+    {
+     "id": "goblin-female",
+     "name": "Goblin Female",
+     "circle": "objects/d15bcf65ebebde099e809067cac94bb7.webp",
+     "tile": "",
+     "group": "goblin"
+    }
+   ]
+  },
+  {
+   "id": "pandaren",
+   "name": "Pandaren",
+   "circle": "objects/500b6bfc3722a9974c67b6dd0d71b37c.webp",
+   "tile": "",
+   "raceId": 24,
+   "faction": "Neutral",
+   "group": "Core",
+   "description": "A spiritual and inquisitive people, the pandaren have a deep love for cooking, brewing, and adventure.",
+   "bodies": [
+    {
+     "id": "pandaren-male",
+     "name": "Pandaren Male",
+     "circle": "objects/500b6bfc3722a9974c67b6dd0d71b37c.webp",
+     "tile": "",
+     "group": "pandaren"
+    },
+    {
+     "id": "pandaren-female",
+     "name": "Pandaren Female",
+     "circle": "objects/dffc5332b6bd4a81b19b575733dcccd5.webp",
+     "tile": "",
+     "group": "pandaren"
+    }
+   ]
+  },
+  {
+   "id": "dracthyr",
+   "name": "Dracthyr",
+   "circle": "objects/9a712b2b756bed58ff5cee3da3a9cce6.webp",
+   "tile": "",
+   "raceId": 52,
+   "faction": "Neutral",
+   "group": "Core",
+   "description": "Infused with the magic of the dragonflights, the dracthyr combine the resourcefulness of mortals with the power of dragons.",
+   "bodies": [
+    {
+     "id": "dracthyr-male",
+     "name": "Dracthyr",
+     "circle": "objects/9a712b2b756bed58ff5cee3da3a9cce6.webp",
+     "tile": "",
+     "group": "dracthyr"
+    }
+   ]
+  },
+  {
+   "id": "voidelf",
+   "name": "Void Elf",
+   "circle": "objects/4ef79df9b004fad7ff3021df753504a5.webp",
+   "tile": "",
+   "raceId": 29,
+   "faction": "Alliance",
+   "group": "Allied",
+   "description": "Transformed by forbidden magic, the void elves were cast out by their kin and now fight for the Alliance.",
+   "bodies": [
+    {
+     "id": "voidelf-male",
+     "name": "Void Elf Male",
+     "circle": "objects/4ef79df9b004fad7ff3021df753504a5.webp",
+     "tile": "",
+     "group": "voidelf"
+    },
+    {
+     "id": "voidelf-female",
+     "name": "Void Elf Female",
+     "circle": "objects/18344321719f2b64ebaf3a2164ed48ad.webp",
+     "tile": "",
+     "group": "voidelf"
+    }
+   ]
+  },
+  {
+   "id": "nightborne",
+   "name": "Nightborne",
+   "circle": "objects/3dbc980c53a3faefc8d84bec04949ada.webp",
+   "tile": "",
+   "raceId": 27,
+   "faction": "Horde",
+   "group": "Allied",
+   "description": "Secluded in Suramar for 10,000 years, the nightborne developed unrivaled mastery of the arcane arts.",
+   "bodies": [
+    {
+     "id": "nightborne-male",
+     "name": "Nightborne Male",
+     "circle": "objects/3dbc980c53a3faefc8d84bec04949ada.webp",
+     "tile": "",
+     "group": "nightborne"
+    },
+    {
+     "id": "nightborne-female",
+     "name": "Nightborne Female",
+     "circle": "objects/d983c11567e79577243adb8854b5bb42.webp",
+     "tile": "",
+     "group": "nightborne"
+    }
+   ]
+  },
+  {
+   "id": "lightforged",
+   "name": "Lightforged Draenei",
+   "circle": "objects/14cd08f10c476a24d6d68fcbd6845516.webp",
+   "tile": "",
+   "raceId": 30,
+   "faction": "Alliance",
+   "group": "Allied",
+   "description": "The Lightforged draenei were infused with the Holy Light to become living weapons against evil.",
+   "bodies": [
+    {
+     "id": "lightforged-male",
+     "name": "Lightforged Draenei Male",
+     "circle": "objects/14cd08f10c476a24d6d68fcbd6845516.webp",
+     "tile": "",
+     "group": "lightforged"
+    },
+    {
+     "id": "lightforged-female",
+     "name": "Lightforged Draenei Female",
+     "circle": "objects/502aa4e6e5cbf14c31425d347533a0e0.webp",
+     "tile": "",
+     "group": "lightforged"
+    }
+   ]
+  },
+  {
+   "id": "highmountain",
+   "name": "Highmountain Tauren",
+   "circle": "objects/d308ed4ad542660b8ad6aad031dd2152.webp",
+   "tile": "",
+   "raceId": 28,
+   "faction": "Horde",
+   "group": "Allied",
+   "description": "Honoring the spirits of earth, river, and sky, the Highmountain tauren embody nobility and strength.",
+   "bodies": [
+    {
+     "id": "highmountain-male",
+     "name": "Highmountain Tauren Male",
+     "circle": "objects/d308ed4ad542660b8ad6aad031dd2152.webp",
+     "tile": "",
+     "group": "highmountain"
+    },
+    {
+     "id": "highmountain-female",
+     "name": "Highmountain Tauren Female",
+     "circle": "objects/dda0882d320340607bcf8c63ff09d16e.webp",
+     "tile": "",
+     "group": "highmountain"
+    }
+   ]
+  },
+  {
+   "id": "darkiron",
+   "name": "Dark Iron Dwarf",
+   "circle": "objects/7fcdcfcaac868025473cca6520d8471c.webp",
+   "tile": "",
+   "raceId": 34,
+   "faction": "Alliance",
+   "group": "Allied",
+   "description": "With fiery tempers and fierce determination, the Dark Iron fight alongside their dwarven kin.",
+   "bodies": [
+    {
+     "id": "darkiron-male",
+     "name": "Dark Iron Dwarf Male",
+     "circle": "objects/7fcdcfcaac868025473cca6520d8471c.webp",
+     "tile": "",
+     "group": "darkiron"
+    },
+    {
+     "id": "darkiron-female",
+     "name": "Dark Iron Dwarf Female",
+     "circle": "objects/09cb9c1e08e1fddb12a4329b6a1b6967.webp",
+     "tile": "",
+     "group": "darkiron"
+    }
+   ]
+  },
+  {
+   "id": "maghar",
+   "name": "Mag'har Orc",
+   "circle": "objects/79bdef1f728c1b7e128e28817061d722.webp",
+   "tile": "",
+   "raceId": 36,
+   "faction": "Horde",
+   "group": "Allied",
+   "description": "Once rival clans, the uncorrupted orcs of Draenor now stand united as the ferocious Mag'har.",
+   "bodies": [
+    {
+     "id": "maghar-male",
+     "name": "Mag'har Orc Male",
+     "circle": "objects/79bdef1f728c1b7e128e28817061d722.webp",
+     "tile": "",
+     "group": "maghar"
+    },
+    {
+     "id": "maghar-female",
+     "name": "Mag'har Orc Female",
+     "circle": "objects/727b171429f6116c6744d8fd7eb795ed.webp",
+     "tile": "",
+     "group": "maghar"
+    },
+    {
+     "id": "magharupright-male",
+     "name": "Mag'har Orc Male (Upright)",
+     "circle": "objects/79bdef1f728c1b7e128e28817061d722.webp",
+     "tile": "",
+     "group": "maghar"
+    }
+   ]
+  },
+  {
+   "id": "kultiran",
+   "name": "Kul Tiran",
+   "circle": "objects/74c93b601a1a8378d8bee479ab001625.webp",
+   "tile": "",
+   "raceId": 32,
+   "faction": "Alliance",
+   "group": "Allied",
+   "description": "After years of isolation, the proud Kul Tirans once more lend their naval might to the Alliance.",
+   "bodies": [
+    {
+     "id": "kultiran-male",
+     "name": "Kul Tiran Male",
+     "circle": "objects/74c93b601a1a8378d8bee479ab001625.webp",
+     "tile": "",
+     "group": "kultiran"
+    },
+    {
+     "id": "kultiran-female",
+     "name": "Kul Tiran Female",
+     "circle": "objects/d90fd0881db094f8ca7a702ef51dfe47.webp",
+     "tile": "",
+     "group": "kultiran"
+    }
+   ]
+  },
+  {
+   "id": "zandalari",
+   "name": "Zandalari Troll",
+   "circle": "objects/bd49b051ea85e2e8e36946dbd447e4b2.webp",
+   "tile": "",
+   "raceId": 31,
+   "faction": "Horde",
+   "group": "Allied",
+   "description": "The Zandalari revere their mystical loa and command one of Azeroth's most formidable fleets.",
+   "bodies": [
+    {
+     "id": "zandalari-male",
+     "name": "Zandalari Troll Male",
+     "circle": "objects/bd49b051ea85e2e8e36946dbd447e4b2.webp",
+     "tile": "",
+     "group": "zandalari"
+    },
+    {
+     "id": "zandalari-female",
+     "name": "Zandalari Troll Female",
+     "circle": "objects/63773204c03c45cc155de532fffd6be8.webp",
+     "tile": "",
+     "group": "zandalari"
+    }
+   ]
+  },
+  {
+   "id": "mechagnome",
+   "name": "Mechagnome",
+   "circle": "objects/2f45afd708f721e0f08264710153e8b6.webp",
+   "tile": "",
+   "raceId": 37,
+   "faction": "Alliance",
+   "group": "Allied",
+   "description": "The clever mechagnomes strive to balance flesh with technology, making them innovative allies.",
+   "bodies": [
+    {
+     "id": "mechagnome-male",
+     "name": "Mechagnome Male",
+     "circle": "objects/2f45afd708f721e0f08264710153e8b6.webp",
+     "tile": "",
+     "group": "mechagnome"
+    },
+    {
+     "id": "mechagnome-female",
+     "name": "Mechagnome Female",
+     "circle": "objects/d337fd70bd30d950e62731fb185c5a50.webp",
+     "tile": "",
+     "group": "mechagnome"
+    }
+   ]
+  },
+  {
+   "id": "vulpera",
+   "name": "Vulpera",
+   "circle": "objects/7ace01d6f06477886d06709caaf15f26.webp",
+   "tile": "",
+   "raceId": 35,
+   "faction": "Horde",
+   "group": "Allied",
+   "description": "Cunning and resourceful, the vulpera have a knack for thriving in the harshest conditions.",
+   "bodies": [
+    {
+     "id": "vulpera-male",
+     "name": "Vulpera Male",
+     "circle": "objects/7ace01d6f06477886d06709caaf15f26.webp",
+     "tile": "",
+     "group": "vulpera"
+    },
+    {
+     "id": "vulpera-female",
+     "name": "Vulpera Female",
+     "circle": "objects/a95f4c0987c1d5c4055a0d0aa09170d9.webp",
+     "tile": "",
+     "group": "vulpera"
+    }
+   ]
+  },
+  {
+   "id": "earthen",
+   "name": "Earthen",
+   "circle": "objects/7e32c06b5c3ade7a945434349b8253b1.webp",
+   "tile": "",
+   "raceId": 84,
+   "faction": "Neutral",
+   "group": "Allied",
+   "description": "Newly freed of the edicts that bound them, the new earthen venture forth with limitless curiosity to explore the world and join the Horde.",
+   "bodies": [
+    {
+     "id": "earthen-male",
+     "name": "Earthen Male",
+     "circle": "objects/7e32c06b5c3ade7a945434349b8253b1.webp",
+     "tile": "",
+     "group": "earthen"
+    },
+    {
+     "id": "earthen-female",
+     "name": "Earthen Female",
+     "circle": "objects/34e6867c5da6ef0ef5553b49775008e3.webp",
+     "tile": "",
+     "group": "earthen"
+    }
+   ]
+  },
+  {
+   "id": "haranir",
+   "name": "Haranir",
+   "circle": "objects/0dd51f3c80daceb614fa11d124a38d0b.webp",
+   "tile": "",
+   "raceId": 86,
+   "faction": "Neutral",
+   "group": "Allied",
+   "description": "Ferocious, watchful guardians, the haranir keep an ever-present vigil over the wild domains of their long-absent Goddess, in hopes that she might one day return.",
+   "bodies": [
+    {
+     "id": "haranir-male",
+     "name": "Haranir Male",
+     "circle": "objects/0dd51f3c80daceb614fa11d124a38d0b.webp",
+     "tile": "",
+     "group": "haranir"
+    },
+    {
+     "id": "haranir-female",
+     "name": "Haranir Female",
+     "circle": "objects/bb4525c8aca45b634ef978daffe8aa8a.webp",
+     "tile": "",
+     "group": "haranir"
+    }
+   ]
+  },
+  {
+   "id": "gilnean",
+   "name": "Worgen (Gilnean)",
+   "circle": "objects/316c6eeca6e95dc906c305f33fc57f92.webp",
+   "tile": "",
+   "raceId": 23,
+   "faction": "Alliance",
+   "group": "Core",
+   "description": "The worgen were first unleashed upon the Eastern Kingdoms by Archmage Arugal. <PH>",
+   "bodies": [
+    {
+     "id": "gilnean-male",
+     "name": "Worgen (Gilnean) Male",
+     "circle": "objects/316c6eeca6e95dc906c305f33fc57f92.webp",
+     "tile": "",
+     "group": "gilnean"
+    },
+    {
+     "id": "gilnean-female",
+     "name": "Worgen (Gilnean) Female",
+     "circle": "objects/7a594e3afe713fe58777c0a027034aac.webp",
+     "tile": "",
+     "group": "gilnean"
+    }
+   ]
+  },
+  {
+   "id": "visage",
+   "name": "Dracthyr (Visage)",
+   "circle": "objects/b155b2613926060b53bb56353f2a8e2a.webp",
+   "tile": "",
+   "raceId": 75,
+   "faction": "Neutral",
+   "group": "Core",
+   "description": "A mysterious people with an affinity for manipulating candles.",
+   "bodies": [
+    {
+     "id": "visage-male",
+     "name": "Dracthyr (Visage) Male",
+     "circle": "objects/b155b2613926060b53bb56353f2a8e2a.webp",
+     "tile": "",
+     "group": "visage"
+    },
+    {
+     "id": "visage-female",
+     "name": "Dracthyr (Visage) Female",
+     "circle": "objects/d02d8d2b31c27b30008a8f3564b34604.webp",
+     "tile": "",
+     "group": "visage"
+    }
+   ]
+  }
+ ],
+ "mounts": [],
+ "items": [
+  {
+   "id": "item-687066",
+   "name": "Void Nemesis' Spaulders",
+   "circle": "objects/76c1a99d2c4519dd0176fc298409656a.webp",
+   "tile": "",
+   "model": "items/item-687066/manifest.json",
+   "slot": "shoulder",
+   "line": "midnight",
+   "icon": "objects/76c1a99d2c4519dd0176fc298409656a.webp",
+   "facet": "cloth"
+  },
+  {
+   "id": "item-698194",
+   "name": "Darkfuse Lowdown Coat",
+   "circle": "objects/242f774228213fdbd8edc96799a90faa.webp",
+   "tile": "",
+   "model": "items/item-698194/manifest.json",
+   "slot": "chest",
+   "line": "warwithin",
+   "icon": "objects/242f774228213fdbd8edc96799a90faa.webp",
+   "facet": "none"
+  },
+  {
+   "id": "item-677122",
+   "name": "Flawless Phase Blade",
+   "circle": "objects/d80816e74982b2a0d592e83ee21cda00.webp",
+   "tile": "",
+   "model": "items/item-677122/manifest.json",
+   "slot": "mainhand",
+   "line": "warwithin",
+   "icon": "objects/d80816e74982b2a0d592e83ee21cda00.webp"
+  },
+  {
+   "id": "item-697869",
+   "name": "Sandy Quotidian Hood",
+   "circle": "objects/109d027b734919fa7abcc5324101be84.webp",
+   "tile": "",
+   "model": "items/item-697869/manifest.json",
+   "slot": "head",
+   "line": "warwithin",
+   "icon": "objects/109d027b734919fa7abcc5324101be84.webp",
+   "facet": "none"
+  },
+  {
+   "id": "item-676984",
+   "name": "Sandy Quotidian Sash",
+   "circle": "objects/c4029fd4de1a79dc6576f1a4784d3e37.webp",
+   "tile": "",
+   "model": "items/item-676984/manifest.json",
+   "slot": "waist",
+   "line": "warwithin",
+   "icon": "objects/c4029fd4de1a79dc6576f1a4784d3e37.webp",
+   "facet": "none"
+  }
+ ],
+ "sets": []
+}

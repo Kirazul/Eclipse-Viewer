@@ -1,0 +1,23 @@
+---
+/** Eclipse's own marks that have no icon-set equivalent. Drawn here, original. */
+interface Props {
+  name: "hanger" | "mount" | "discord";
+  class?: string;
+}
+const { name, class: cls } = Astro.props;
+---
+{name === "hanger" && (
+  <svg class={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 8.5V7.2a2.1 2.1 0 1 0-2.1-2.1" /><path d="M12 8.5 2.8 15.6c-.9.7-.4 2.1.7 2.1h17c1.1 0 1.6-1.4.7-2.1z" />
+  </svg>
+)}
+{name === "mount" && (
+  <svg class={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M6 21c0-4 1.6-6.4 4.6-8.2l-3.2-.6-2.6 1.6L3 11.4l5.6-5.2L8.4 3l3.2 2c4.8.4 8.4 3.8 8.4 9.4V21" /><path d="M11 8.8h.01" />
+  </svg>
+)}
+{name === "discord" && (
+  <svg class={cls} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M20.3 4.4a19.8 19.8 0 0 0-4.9-1.5l-.6 1.3a18.3 18.3 0 0 0-5.5 0l-.6-1.3a19.7 19.7 0 0 0-4.9 1.5C.6 9-.3 13.6.1 18a19.9 19.9 0 0 0 6 3l1.3-2a12.9 12.9 0 0 1-1.9-.9l.5-.3c3.9 1.8 8.2 1.8 12 0l.5.3a12.3 12.3 0 0 1-1.9.9l1.3 2a19.8 19.8 0 0 0 6-3c.5-5.2-.8-9.7-3.6-13.6zM8 15.3c-1.2 0-2.2-1.1-2.2-2.4S6.8 10.5 8 10.5s2.2 1.1 2.2 2.4-1 2.4-2.2 2.4zm8 0c-1.2 0-2.2-1.1-2.2-2.4s1-2.4 2.2-2.4 2.2 1.1 2.2 2.4-1 2.4-2.2 2.4z" />
+  </svg>
+)}

@@ -1,0 +1,267 @@
+/**
+ * Fetching one model. The manifest comes first; then GLB, default clip, fx, textures
+ * and composite layers all start together at high priority. `ready` resolves as soon
+ * as geometry, the default clip and what the default look needs are in; a texture
+ * only a hidden geoset uses keeps coming in the background.
+ */
+import { RepeatWrapping, ClampToEdgeWrapping, type AnimationClip, type Texture, type WebGLRenderer } from "three";
+import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
+import {
+  FORMAT_VERSION,
+  packUrl,
+  paths,
+  type ClipEntry,
+  type CompositeLayer,
+  type FxData,
+  type ModelManifest,
+  type SubmeshExtras,
+} from "@eclipse/format";
+import { fetchBytes, fetchJson, isAbort } from "../net/fetchPack";
+import { parseClip, parseGlb, parseTexture } from "./loaders";
+import { defaultClipId, playableClips } from "../logic/clipOrder";
+
+export interface LoadEnv {
+  base: string;
+  renderer: WebGLRenderer;
+  anisotropy(): number;
+}
+
+export interface LoadRun {
+  signal: AbortSignal;
+  /** Bytes as they arrive, and the size of each file once it is known. */
+  onBytes?(n: number): void;
+  onExpect?(bytes: number): void;
+  /** Lite preview: nothing beyond what the first frame needs. */
+  lite?: boolean;
+}
+
+/** Streamed clips: one fetch per clip, parsed once, shared by everything that asks. */
+export class ClipStore {
+  private readonly done = new Map<string, AnimationClip>();
+  private readonly pending = new Map<string, { promise: Promise<AnimationClip>; abort: AbortController }>();
+  readonly entries: ClipEntry[];
+  fetched = 0;
+
+  constructor(
+    private readonly env: LoadEnv,
+    entries: ClipEntry[],
+    private readonly pivots?: readonly number[],
+  ) {
+    this.entries = entries;
+  }
+
+  entry(id: string): ClipEntry | undefined {
+    return this.entries.find((c) => c.id === id);
+  }
+
+  cached(id: string): AnimationClip | undefined {
+    return this.done.get(id);
+  }
+
+  put(id: string, clip: AnimationClip): void {
+    this.done.set(id, clip);
+  }
+
+  get(id: string, priority: "high" | "low"): Promise<AnimationClip> {
+    const hit = this.done.get(id);
+    if (hit) return Promise.resolve(hit);
+    const running = this.pending.get(id);
+    if (running) return running.promise;
+    const entry = this.entry(id);
+    if (!entry) return Promise.reject(new Error(`no clip ${id}`));
+    const abort = new AbortController();
+    const promise = (async () => {
+      this.fetched++;
+      const bytes = await fetchBytes(packUrl(this.env.base, entry.key), {
+        signal: abort.signal,
+        priority,
+        expected: entry.bytes,
+      });
+      const clip = await parseClip(bytes, entry, this.pivots);
+      this.done.set(id, clip);
+      return clip;
+    })().finally(() => this.pending.delete(id));
+    this.pending.set(id, { promise, abort });
+    return promise;
+  }
+
+  /** A click that is no longer wanted stops using the line. */
+  cancel(id: string): void {
+    this.pending.get(id)?.abort.abort();
+  }
+
+  dispose(): void {
+    for (const p of this.pending.values()) p.abort.abort();
+    this.pending.clear();
+    this.done.clear();
+  }
+}
+
+export class ModelAssets {
+  readonly textures: (Texture | null)[];
+  readonly layers: { layer: CompositeLayer; texture: Texture | null }[] = [];
+  fx: FxData | null = null;
+  gltf!: GLTF;
+  readonly clips: ClipStore;
+  readonly defaultClip: string | null;
+  /** A hidden geoset's texture arrived: whoever waits on it hears here. */
+  onTexture: ((index: number) => void) | null = null;
+  private readonly variants = new Map<string, Texture>();
+  private readonly owned = new Set<Texture>();
+  private disposed = false;
+
+  private constructor(
+    readonly manifest: ModelManifest,
+    readonly env: LoadEnv,
+  ) {
+    this.textures = manifest.textures.map(() => null);
+    this.clips = new ClipStore(env, playableClips(manifest.clips), manifest.pivots);
+    this.defaultClip = defaultClipId(manifest.defaultClip, this.clips.entries);
+  }
+
+  static async load(id: string, env: LoadEnv, run: LoadRun): Promise<ModelAssets> {
+    const manifest = await fetchJson<ModelManifest>(packUrl(env.base, paths.manifest(id)), {
+      signal: run.signal,
+      priority: "high",
+      onBytes: run.onBytes,
+    });
+    if (manifest.formatVersion > FORMAT_VERSION) {
+      throw new Error(`pack format ${manifest.formatVersion} is newer than this engine (${FORMAT_VERSION})`);
+    }
+    const assets = new ModelAssets(manifest, env);
+    try {
+      await assets.fetchAll(run);
+    } catch (err) {
+      assets.dispose();
+      throw err;
+    }
+    return assets;
+  }
+
+  private async fetchAll(run: LoadRun): Promise<void> {
+    const { manifest, env } = this;
+    const url = (key: string) => packUrl(env.base, key);
+    const high = { signal: run.signal, priority: "high" as const, onBytes: run.onBytes };
+
+    const expect = (n: number) => run.onExpect?.(n);
+    expect(manifest.glb.bytes);
+    const glb = fetchBytes(url(manifest.glb.key), { ...high, expected: manifest.glb.bytes });
+
+    const clipEntry = this.defaultClip ? this.clips.entry(this.defaultClip) : undefined;
+    let clip: Promise<ArrayBuffer> | null = null;
+    if (clipEntry) {
+      expect(clipEntry.bytes);
+      clip = fetchBytes(url(clipEntry.key), { ...high, expected: clipEntry.bytes });
+    }
+
+    let fx: Promise<FxData> | null = null;
+    if (manifest.fx) {
+      expect(manifest.fx.bytes);
+      fx = fetchJson<FxData>(url(manifest.fx.key), { ...high, expected: manifest.fx.bytes });
+    }
+
+    const layers = (manifest.composite?.layers ?? []).filter((l) => !!l.key);
+    const layerPromises = layers.map(async (layer) => {
+      expect(layer.bytes);
+      const bytes = await fetchBytes(url(layer.key), { ...high, expected: layer.bytes });
+      const texture = await parseTexture(env.renderer, bytes, 1);
+      this.own(texture);
+      this.layers.push({ layer, texture });
+    });
+
+    const startTexture = async (index: number): Promise<void> => {
+      const entry = manifest.textures[index]!;
+      if (!entry.key) return;
+      expect(entry.bytes);
+      const bytes = await fetchBytes(url(entry.key), { ...high, expected: entry.bytes });
+      const texture = await parseTexture(env.renderer, bytes, env.anisotropy());
+      if (this.disposed) {
+        texture.dispose();
+        return;
+      }
+      this.own(texture);
+      this.textures[index] = texture;
+      this.onTexture?.(index);
+    };
+
+    // Every texture starts now, since what the default look needs is known only once
+    // the GLB is parsed, and the look is what it waits for. A lite preview waits for
+    // the GLB instead and fetches only those: it will never show anything else.
+    const started = new Map<number, Promise<void>>();
+    if (!run.lite) manifest.textures.forEach((_, i) => started.set(i, startTexture(i)));
+
+    this.gltf = await parseGlb(await glb);
+    const needed = this.texturesForDefaultLook();
+    if (run.lite) for (const i of needed) started.set(i, startTexture(i));
+    const required = [...needed].map((i) => started.get(i)!);
+    // The rest may finish later or not at all: that only keeps a hidden part hidden.
+    for (const [i, p] of started) {
+      if (!needed.has(i)) p.catch((err) => reportBackground(err, manifest.textures[i]?.key));
+    }
+
+    const [clipBytes, fxData] = await Promise.all([clip, fx, ...layerPromises, ...required]);
+    if (clipBytes && clipEntry) {
+      this.clips.put(clipEntry.id, await parseClip(clipBytes as ArrayBuffer, clipEntry, manifest.pivots));
+    }
+    if (fxData) this.fx = fxData as FxData;
+    // Paint order comes from the manifest, not arrival order.
+    this.layers.sort((a, b) => a.layer.layer - b.layer.layer);
+  }
+
+  private texturesForDefaultLook(): Set<number> {
+    const shown = new Set(this.manifest.defaultGeosets);
+    const out = new Set<number>();
+    this.gltf.scene.traverse((o) => {
+      const extras = (o as unknown as { material?: { userData?: SubmeshExtras } }).material?.userData;
+      if (!extras?.units || !shown.has(extras.geoset)) return;
+      for (const u of extras.units) {
+        if (u.tex >= 0 && this.manifest.textures[u.tex]?.key) out.add(u.tex);
+      }
+    });
+    return out;
+  }
+
+  /** This texture now lives and dies with the model. */
+  own(texture: Texture): void {
+    this.owned.add(texture);
+  }
+
+  /** The texture for a unit. WebGL wraps per texture, so a differing unit gets a clone. */
+  textureFor(index: number, wrapS: boolean, wrapT: boolean): Texture | null {
+    const base = this.textures[index];
+    if (!base) return null;
+    const s = wrapS ? RepeatWrapping : ClampToEdgeWrapping;
+    const t = wrapT ? RepeatWrapping : ClampToEdgeWrapping;
+    if (!base.userData.wrapSet) {
+      base.wrapS = s;
+      base.wrapT = t;
+      base.userData.wrapSet = true;
+      base.needsUpdate = true;
+      return base;
+    }
+    if (base.wrapS === s && base.wrapT === t) return base;
+    const key = `${index}:${s}:${t}`;
+    let variant = this.variants.get(key);
+    if (!variant) {
+      variant = base.clone();
+      variant.wrapS = s;
+      variant.wrapT = t;
+      variant.needsUpdate = true;
+      this.variants.set(key, variant);
+      this.own(variant);
+    }
+    return variant;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.clips.dispose();
+    for (const t of this.owned) t.dispose();
+    this.owned.clear();
+    this.variants.clear();
+  }
+}
+
+function reportBackground(err: unknown, key: string | undefined): void {
+  if (!isAbort(err)) console.warn(`[eclipse] texture ${key} failed in the background:`, err);
+}

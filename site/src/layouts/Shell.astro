@@ -1,0 +1,130 @@
+---
+import "../styles/global.css";
+import { House, Users, Settings, Search, Heart, Sun, Moon, Maximize, Menu, ExternalLink } from "lucide-react";
+import Glyph from "../components/Glyph.astro";
+import { BASE, LINKS, PACK_BASE, PACK_ORIGIN, u } from "../lib/base";
+
+interface Props {
+  title: string;
+  subtitle?: string;
+  /** Rail entry to light. */
+  nav?: "home" | "wardrobe" | "races" | "mounts" | "settings";
+  /** Browser tab title, when it differs from the page title. */
+  tabTitle?: string;
+  description?: string;
+  /** The page fits the window and scrolls inside itself (the dressing room). */
+  fit?: boolean;
+}
+const { title, subtitle, nav, tabTitle, description, fit } = Astro.props;
+const pageTitle = tabTitle ?? (title === "Eclipse" ? "Eclipse: World of Warcraft in 3D" : `${title} | Eclipse`);
+const desc = description ?? "A free 3D viewer for World of Warcraft's races, mounts and items, in your browser.";
+const links = [
+  { id: "home", label: "Home", href: u(""), icon: "home" },
+  { id: "wardrobe", label: "Wardrobe", href: u("wardrobe/"), icon: "hanger" },
+  { id: "races", label: "Races", href: u("races/"), icon: "races" },
+  { id: "mounts", label: "Mounts", href: u("mounts/"), icon: "mount" },
+  { id: "settings", label: "Settings", href: u("settings/"), icon: "settings" },
+];
+// The pack base, absolute, tells the service worker which host holds immutable packs.
+const swUrl = `${BASE}sw.js?packs=${encodeURIComponent(PACK_BASE)}`;
+---
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={desc} />
+    <meta name="theme-color" content="#0c0a08" />
+    <link rel="icon" type="image/png" href={u("favicon.png")} />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site).href} />
+    {/* Pre-paint: theme, accent and whether the retail sprites are known to load. Nothing flashes. */}
+    <script is:inline>
+      (function () {
+        var d = document.documentElement, t = null, a = null, s = null;
+        try { t = localStorage.getItem("theme"); a = localStorage.getItem("accent"); s = localStorage.getItem("ui-art"); } catch (e) {}
+        d.dataset.theme = t === "light" || (t === "auto" && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+        if (a) d.dataset.accent = a;
+        if (s === "1") d.dataset.art = "1";
+      })();
+    </script>
+    <style set:html={`:root{--img-backdrop:url(${u("img/bg-wide-960.webp")});--model-background-image:url(${u("model-background.svg")})}`}></style>
+    {/* Images connect without CORS, the engine's fetches with it: two pools, so two preconnects. */}
+    {PACK_ORIGIN && <link rel="preconnect" href={PACK_ORIGIN} />}
+    {PACK_ORIGIN && <link rel="preconnect" href={PACK_ORIGIN} crossorigin="anonymous" />}
+    <link rel="preload" as="image" href={u("img/logo-92.webp")} fetchpriority="high" />
+    <slot name="head" />
+  </head>
+  <body>
+    <div class="backdrop" aria-hidden="true"></div>
+    <div class="shell">
+      <aside class="rail" id="rail" aria-label="Main">
+        <a class="brand" href={u("")} data-astro-prefetch aria-label="Eclipse home">
+          <img src={u("img/logo-92.webp")} alt="" width="46" height="46" decoding="sync" />
+          <span class="brand-word">ECLIPSE</span>
+        </a>
+        <nav class="rail-nav scroll-none">
+          {links.map((l) => (
+            <a class:list={["nav-item", { on: nav === l.id }]} href={l.href} data-astro-prefetch aria-current={nav === l.id ? "page" : undefined}>
+              {l.icon === "home" && <House aria-hidden="true" />}
+              {l.icon === "hanger" && <Glyph name="hanger" />}
+              {l.icon === "races" && <Users aria-hidden="true" />}
+              {l.icon === "mount" && <Glyph name="mount" />}
+              {l.icon === "settings" && <Settings aria-hidden="true" />}
+              {l.label}
+            </a>
+          ))}
+        </nav>
+        <div class="rail-foot">
+          <a class="nav-item" href={LINKS.support} target="_blank" rel="noopener"><Heart aria-hidden="true" />Support</a>
+          <a class="nav-item" href={LINKS.discord} target="_blank" rel="noopener"><Glyph name="discord" />Discord</a>
+          <div class="rail-links">
+            <a href={u("about/")} data-astro-prefetch>About</a>
+            <a href={u("privacy/")} data-astro-prefetch>Privacy</a>
+          </div>
+        </div>
+      </aside>
+      <div class="drawer-scrim" id="drawer-scrim"></div>
+      <div class="page">
+        <header class="topbar">
+          <button class="tool menu-btn" id="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="rail"><Menu aria-hidden="true" /></button>
+          <button class="tool" type="button" data-search-open aria-label="Search" data-tip="Search" data-tip-sub="Ctrl K"><Search aria-hidden="true" /></button>
+          <button class="tool" type="button" id="theme-btn" aria-label="Switch theme" data-tip="Switch theme">
+            <Sun className="hidden dark:block" aria-hidden="true" /><Moon className="block dark:hidden" aria-hidden="true" />
+          </button>
+          <a class:list={["tool", { on: nav === "settings" }]} href={u("settings/")} data-astro-prefetch aria-label="Settings" data-tip="Settings"><Settings aria-hidden="true" /></a>
+          <button class="tool" type="button" id="fullscreen-btn" aria-label="Full screen" data-tip="Full screen"><Maximize aria-hidden="true" /></button>
+        </header>
+        <div class:list={["page-main", fit ? "fit" : "scroll"]} id="page-main">
+          <div class="page-head">
+            <h1 class="page-title">{title}</h1>
+            {subtitle && <p class="page-sub">{subtitle}</p>}
+          </div>
+          <main class="contents"><slot /></main>
+        </div>
+      </div>
+    </div>
+    <div class="tip" id="tip" role="tooltip"><div class="tip-title"></div><div class="tip-sub"></div><div class="tip-hint"></div></div>
+    <div id="overlay-root"></div>
+    <script>
+      import "../lib/shell";
+    </script>
+    {import.meta.env.PROD && (
+      <script is:inline define:vars={{ swUrl, swScope: BASE }}>
+        // After load, on an idle moment: the service worker never competes with first paint.
+        if ("serviceWorker" in navigator) addEventListener("load", function () {
+          (window.requestIdleCallback || setTimeout)(function () {
+            navigator.serviceWorker.register(swUrl, { scope: swScope, updateViaCache: "none" }).then(function (r) {
+              var sw = r.active || r.waiting || r.installing;
+              var seed = function () {
+                var c = navigator.serviceWorker.controller || r.active;
+                if (c) c.postMessage({ seed: performance.getEntriesByType("resource").map(function (e) { return e.name; }) });
+              };
+              if (r.active) seed(); else if (sw) sw.addEventListener("statechange", function () { if (sw.state === "activated") seed(); });
+            }).catch(function () {});
+          });
+        });
+      </script>
+    )}
+  </body>
+</html>

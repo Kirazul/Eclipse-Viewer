@@ -1,0 +1,18 @@
+---
+import Shell from "../../layouts/Shell.astro";
+import GroupedList from "../../components/GroupedList.astro";
+import FallbackNote from "../../components/FallbackNote.astro";
+import { catalog } from "../../data/catalog";
+import { u } from "../../lib/base";
+import type { RaceEntry } from "@eclipse/format";
+---
+<Shell title="Races" subtitle="Pick a people, then a body to dress." nav="races">
+  <GroupedList
+    entries={catalog.races}
+    link={(e) => {
+      const race = e as RaceEntry;
+      return race.bodies.some((b) => b.model) ? u(`races/${race.id}/`) : null;
+    }}
+  />
+  <FallbackNote />
+</Shell>

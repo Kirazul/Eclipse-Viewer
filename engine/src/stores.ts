@@ -3,7 +3,7 @@
  * calls the methods in api.ts. Nothing in here renders.
  */
 import { atom } from "nanostores";
-import type { ClipEntry, ModelManifest } from "@eclipse/format";
+import type { ClipEntry, ModelManifest, SlotId } from "@eclipse/format";
 
 /** One Model Parts row. */
 export interface PartRow {
@@ -55,3 +55,10 @@ export const $skeleton = atom<boolean>(false);
 export const $wireframe = atom<boolean>(false);
 export const $autoRotationSpeed = atom<number>(0);
 export const $backgroundColor = atom<string | null>(null);
+
+/** What is worn: slot -> item id. Hover never writes here, only a click does. */
+export const $equipped = atom<Partial<Record<SlotId, string>>>({});
+/** What is being tried on: slot -> item id, shown over $equipped until it ends. */
+export const $previewing = atom<Partial<Record<SlotId, string>>>({});
+/** Slot the camera is looking at, null for the whole figure. */
+export const $focusedSlot = atom<SlotId | null>(null);

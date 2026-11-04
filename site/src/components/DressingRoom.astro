@@ -1,0 +1,224 @@
+---
+/**
+ * The dressing room, after src/eclipse/ui/UiMorph.cpp. The figure is the answer to
+ * the only question being asked (what will this look like on me), the ring is what
+ * you are wearing, the grid is what you could wear.
+ *
+ * Everything on this page down to the catalogue's chips is plain HTML, painted on
+ * the first frame, with its size fixed by CSS. React arrives later and only inside
+ * the Customization and Viewer panes, which is what keeps layout shift at zero and
+ * the canvas in the same element for the life of the page.
+ */
+import {
+  ChevronLeft, ChevronRight, Crosshair, Flag, Footprints, GripVertical, Hand, HardHat, Pause, Play,
+  PersonStanding, Shield, Shirt, Sword, Grip, Watch, Wind, X,
+} from "lucide-react";
+import Notice from "./Notice.astro";
+import { catalog, FEATURED } from "../data/catalog";
+import { sprite } from "../lib/base";
+import { ALL_SLOTS, ARMOR_SLOTS, CHIP_ORDER, SLOT_LABEL, SLOT_RING, emptySprite, type SlotId } from "../lib/slots";
+
+interface Props {
+  defaultTab?: "items" | "viewer";
+}
+const { defaultTab = "items" } = Astro.props;
+
+const BARE_ICON: Record<SlotId, unknown> = {
+  head: HardHat, shoulder: Shield, back: Wind, chest: Shirt, shirt: Shirt, tabard: Flag, wrist: Watch,
+  hands: Hand, waist: Grip, legs: PersonStanding, feet: Footprints, mainhand: Sword, offhand: Shield, ranged: Crosshair,
+};
+const tabs = [
+  { id: "items", label: "Items" },
+  { id: "sets", label: "Sets" },
+  { id: "customization", label: "Customization" },
+  { id: "viewer", label: "Viewer" },
+];
+const facets = ["Cloth", "Leather", "Mail", "Plate"];
+
+// Every sprite this page may draw, as a CSS variable. They are only used under
+// [data-art], so a page with no packs yet requests none of them.
+const spriteNames = ["slot", "slot-worn", "slot-sel", "card-worn", "setcard-worn", "card-flash", "hidden", ...ALL_SLOTS.map(emptySprite)];
+const spriteCss = `:root{${spriteNames.map((n) => `--sp-${n}:url(${sprite(n)})`).join(";")}}`;
+
+// What Customization needs at once. Small: a few dozen bodies, never the item catalogue.
+const roomData = {
+  featured: FEATURED?.id ?? "",
+  races: catalog.races.map((r) => ({
+    id: r.id,
+    name: r.name,
+    circle: r.circle,
+    bodies: r.bodies.map((b) => ({ id: b.id, name: b.name, circle: b.circle, description: b.description ?? r.description, model: b.model })),
+  })),
+};
+---
+<style set:html={spriteCss}></style>
+<script is:inline type="application/json" id="room-data" set:html={JSON.stringify(roomData)}></script>
+
+<div class="room-page" id="room" data-tab={defaultTab} data-default-tab={defaultTab}>
+  <div class="tabs-row">
+    <div class="tabs" role="tablist" aria-label="Wardrobe view">
+      {tabs.map((t) => (
+        <button class:list={["pill", { on: t.id === defaultTab }]} type="button" role="tab" data-tab-btn={t.id} aria-selected={t.id === defaultTab ? "true" : "false"}>{t.label}</button>
+      ))}
+    </div>
+    <button class="btn danger btn-reset" id="reset-look" type="button" style="height:28px;visibility:hidden" data-tip="Reset look" data-tip-sub="Takes everything off.">Reset look</button>
+  </div>
+  <hr class="rule tabs-rule" />
+
+  <div class="split" id="split">
+    <section class="room" aria-label="Dressing room">
+      <div class="room-grid">
+        <div class="ring-col" data-ring-col="left">
+          {SLOT_RING.left.map((slot) => { const Bare = BARE_ICON[slot] as any; return (
+            <button class:list={["slot", { on: slot === "head" }]} type="button" data-ring={slot} data-sel={slot} aria-label={SLOT_LABEL[slot]}>
+              <span class="slot-well"></span>
+              <span class="slot-bare" style={`--bare:var(--sp-${emptySprite(slot)})`}><Bare aria-hidden="true" /></span>
+              <span class="slot-ico" hidden><img alt="" width="30" height="30" decoding="async" /></span>
+              <span class="slot-veil"></span>
+              <span class="slot-frame"></span>
+              <span class="slot-sel"></span>
+              <span class="slot-x" data-release aria-hidden="true"><X /></span>
+            </button>
+          ); })}
+        </div>
+        <div class="stage" id="stage" data-loading data-scene="on">
+          <div class="stage-model"></div>
+          <img class="stage-scene" id="scene" src={sprite("scene-mage")} alt="" width="478" height="500" decoding="async" fetchpriority="high" onload="this.dataset.ok=1" onerror="this.remove()" />
+          <canvas id="canvas" aria-label="3D model. Drag to turn, scroll to zoom."></canvas>
+          <div class="stage-load" aria-hidden="true"><div class="spin"></div></div>
+          <div class="stage-progress" id="stage-progress"></div>
+          <div class="stage-frame"></div>
+          <div class="stage-error" id="stage-error" hidden role="status">
+            <span id="stage-error-text"></span>
+            <button class="btn" id="stage-retry" type="button" style="height:28px">Retry</button>
+          </div>
+        </div>
+        <div class="ring-col" data-ring-col="right">
+          {SLOT_RING.right.map((slot) => { const Bare = BARE_ICON[slot] as any; return (
+            <button class="slot" type="button" data-ring={slot} data-sel={slot} aria-label={SLOT_LABEL[slot]}>
+              <span class="slot-well"></span>
+              <span class="slot-bare" style={`--bare:var(--sp-${emptySprite(slot)})`}><Bare aria-hidden="true" /></span>
+              <span class="slot-ico" hidden><img alt="" width="30" height="30" decoding="async" /></span>
+              <span class="slot-veil"></span>
+              <span class="slot-frame"></span>
+              <span class="slot-sel"></span>
+              <span class="slot-x" data-release aria-hidden="true"><X /></span>
+            </button>
+          ); })}
+        </div>
+      </div>
+      <div class="ring-bottom">
+        {SLOT_RING.bottom.map((slot) => { const Bare = BARE_ICON[slot] as any; return (
+          <button class="slot" type="button" data-ring={slot} data-sel={slot} aria-label={SLOT_LABEL[slot]}>
+            <span class="slot-well"></span>
+            <span class="slot-bare" style={`--bare:var(--sp-${emptySprite(slot)})`}><Bare aria-hidden="true" /></span>
+            <span class="slot-ico" hidden><img alt="" width="30" height="30" decoding="async" /></span>
+            <span class="slot-veil"></span>
+            <span class="slot-frame"></span>
+            <span class="slot-sel"></span>
+            <span class="slot-x" data-release aria-hidden="true"><X /></span>
+          </button>
+        ); })}
+      </div>
+      <div class="strip" id="strip">
+        <button class="strip-btn" type="button" id="strip-prev" disabled aria-label="Previous animation" data-tip="Previous animation" data-tip-sub="Left arrow"><ChevronLeft aria-hidden="true" /></button>
+        <div class="strip-name" id="strip-name" aria-live="polite">T-Pose</div>
+        <button class="strip-btn" type="button" id="strip-next" disabled aria-label="Next animation" data-tip="Next animation" data-tip-sub="Right arrow"><ChevronRight aria-hidden="true" /></button>
+        <button class="strip-btn" type="button" id="strip-play" disabled aria-label="Pause" data-tip="Pause" data-tip-sub="P">
+          <Pause className="i-pause" aria-hidden="true" /><Play className="i-play" hidden aria-hidden="true" />
+        </button>
+        <input class="range" id="strip-scrub" type="range" min="0" max="1" step="0.001" value="0" disabled aria-label="Animation time" data-ignore-arrows-shortcuts="true" />
+        <button class="strip-btn" type="button" id="strip-speed" disabled aria-label="Speed" data-tip="Speed" data-tip-sub="T">1x</button>
+      </div>
+    </section>
+
+    <div class="split-handle" id="split-handle" role="separator" aria-orientation="vertical" aria-label="Resize panels" tabindex="0" data-ignore-arrows-shortcuts="true">
+      <div class="split-grip"><GripVertical aria-hidden="true" /></div>
+    </div>
+
+    <section class="column" id="column" aria-label="Catalogue">
+      <div class="pane pane-browse" id="browse">
+        <div class="browse-row browse-lines" id="lines">
+          <button class="pill sm on" type="button" data-line="">All (0)</button>
+        </div>
+        <div class="browse-chips">
+          <div class="browse-row chips-gap only-items" id="chips">
+            {CHIP_ORDER.map((slot) => (
+              <button class:list={["chip", { on: slot === "head" }]} type="button" data-chip={slot} data-sel={slot}>{SLOT_LABEL[slot]}</button>
+            ))}
+          </div>
+          <div class="browse-row only-sets"><span class="pill sm on">Item Sets</span></div>
+        </div>
+        <hr class="rule browse-rule" />
+        <div class="browse-head">
+          <div class="search">
+            <input class="field" id="q" type="search" placeholder="Search appearances" aria-label="Search appearances" autocomplete="off" spellcheck="false" maxlength="40" />
+            <button class="field-x" id="q-x" type="button" disabled aria-label="Clear search" data-tip="Clear search" data-tip-sub="Escape"><X aria-hidden="true" /></button>
+          </div>
+          <div class="browse-tools">
+            <button class="pill on" type="button" data-grid-mode="icons">Icons</button>
+            <button class="pill" type="button" data-grid-mode="figures" data-tip="Figures" data-tip-sub="Each item on your character, live.">Figures</button>
+            <span class="count" id="count" aria-label="Results">0</span>
+          </div>
+        </div>
+        <div class="browse-row browse-facets only-items" id="facets">
+          <button class="chip" type="button" data-facet="starred" data-tip="Starred" data-tip-sub="Only what you have starred.">Starred</button>
+          {facets.map((f) => <button class="chip" type="button" data-facet={f.toLowerCase()} data-armor>{f}</button>)}
+        </div>
+        <hr class="rule" />
+        <div class="grid-wrap">
+          <div class="grid-scroll scroll-none" id="grid-scroll"><div class="grid-space" id="grid-space"></div></div>
+          <div class="grid-fade top" id="fade-top"></div>
+          <div class="grid-fade bot" id="fade-bot"></div>
+          <div class="grid-empty" id="grid-empty" hidden></div>
+        </div>
+      </div>
+      <div class="pane pane-custom" id="custom-root">
+        <Notice title="Getting your character ready" body="This fills in by itself in a moment." />
+      </div>
+      <div class="pane pane-viewer" id="viewer-root">
+        <Notice title="Getting the tools ready" body="This fills in by itself in a moment." />
+      </div>
+    </section>
+  </div>
+</div>
+
+{/* Runs before the first paint: the tab, the browsed slot and the panel width come from the
+    URL and the last visit, so the page is right on its first frame. */}
+<script is:inline>
+  (function () {
+    var room = document.getElementById("room");
+    var q = new URLSearchParams(location.search);
+    var tab = q.get("tab") || room.dataset.defaultTab;
+    if (["items", "sets", "customization", "viewer"].indexOf(tab) < 0) tab = "items";
+    room.dataset.tab = tab;
+    room.querySelectorAll("[data-tab-btn]").forEach(function (b) {
+      var on = b.getAttribute("data-tab-btn") === tab;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    var slot = q.get("slot");
+    if (slot && room.querySelector('[data-ring="' + slot.replace(/[^a-z]/g, "") + '"]')) {
+      room.querySelectorAll("[data-sel]").forEach(function (e) {
+        e.classList.toggle("on", e.getAttribute("data-sel") === slot);
+      });
+    }
+    var split = document.getElementById("split");
+    try {
+      var w = localStorage.getItem("room-width");
+      if (w === "collapsed") split.classList.add("collapsed");
+      else if (w && innerWidth >= 768) split.style.setProperty("--room-w", w + "px");
+      if (localStorage.getItem("grid-mode") === "figures") {
+        room.querySelectorAll("[data-grid-mode]").forEach(function (b) {
+          b.classList.toggle("on", b.getAttribute("data-grid-mode") === "figures");
+        });
+      }
+    } catch (e) {}
+    var scene = q.get("scene");
+    if (scene === "off") document.getElementById("stage").dataset.scene = "off";
+  })();
+</script>
+
+<script>
+  import "../lib/room/boot";
+</script>

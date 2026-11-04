@@ -1,0 +1,8 @@
+---
+/** `/viewer?id=` is the same room, opened on its Viewer tab. boot.ts folds the URL into /wardrobe. */
+import Shell from "../layouts/Shell.astro";
+import DressingRoom from "../components/DressingRoom.astro";
+---
+<Shell title="Wardrobe" subtitle="Every look, on any body. Hover to try it on, click to wear it." nav="wardrobe" fit>
+  <DressingRoom defaultTab="viewer" />
+</Shell>
