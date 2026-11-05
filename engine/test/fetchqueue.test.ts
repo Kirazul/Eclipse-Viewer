@@ -130,6 +130,40 @@ describe("the pack queue", () => {
     expect(net.asked.filter((u) => u === "http://p/missing").length).toBe(1);
   });
 
+  it("a socket gone quiet is asked again, as a figure waiting on it would never stand", async () => {
+    vi.useFakeTimers();
+    const got = fetchBytes("http://p/quiet", { expected: 4 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(net.asked).toEqual(["http://p/quiet"]);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(net.asked).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(net.asked).toEqual(["http://p/quiet", "http://p/quiet"]);
+    expect(net.open[0]!.signal!.aborted).toBe(true);
+    net.open[1]!.answer();
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await got).byteLength).toBe(4);
+  });
+
+  it("a socket that never answers fails in the end, and says so", async () => {
+    vi.useFakeTimers();
+    const got = fetchBytes("http://p/gone", { expected: 4 });
+    const failed = got.catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(net.asked).toHaveLength(5);
+    expect(await failed).toBeInstanceOf(PackError);
+    expect(((await failed) as PackError).status).toBe(408);
+  });
+
+  it("cutting a request still cuts what is on its socket", async () => {
+    const stop = new AbortController();
+    const got = fetchBytes("http://p/cut", { signal: stop.signal });
+    await tick();
+    stop.abort();
+    await expect(got).rejects.toMatchObject({ name: "AbortError" });
+    expect(net.open.at(-1)!.signal!.aborted).toBe(true);
+  });
+
   it("gives up after its retries and says so", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     const down = fetchBytes("http://p/down");

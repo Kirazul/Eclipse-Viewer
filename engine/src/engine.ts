@@ -60,7 +60,7 @@ import { fetchBytes, isAbort, yieldToMain, queueState } from "./net/fetchPack";
 import { ModelAssets, type LoadEnv } from "./model/assets";
 import { ClipDirector } from "./model/director";
 import { Figure, type Part } from "./model/figure";
-import { ktx2Loader, whiteTexture } from "./model/loaders";
+import { boneIndices, ktx2Loader, whiteTexture } from "./model/loaders";
 import { CompositeRenderer } from "./wow/composite";
 import { BatchMaterial } from "./wow/material";
 import { CATALOGUE_PROGRAMS } from "./wow/programs";
@@ -68,6 +68,7 @@ import { Wardrobe, type OutfitChange, type WardrobeHost } from "./wow/wardrobe";
 import { Customizer, type LookHost } from "./wow/customize";
 import type { OutlineRig } from "./render/outline";
 import type { FigureCells } from "./render/cells";
+import { linkInBackground } from "./render/linking";
 import { FigureEmitters } from "./render/emitters";
 import { FX_CLOCK } from "./render/particlesSim";
 import {
@@ -173,8 +174,11 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   private shadowFit: ShadowFit | null = null;
   private outline: OutlineRig | null = null;
   private outlineLoading = false;
+  /** The figure the outline's programs are linked for. */
+  private outlineFor: Figure | null = null;
   private cells: FigureCells | null = null;
   private cellsLoading: Promise<FigureCells> | null = null;
+  private cellsHold: () => boolean = () => false;
   private xrSupported = false;
   private xrSession: XRSession | null = null;
   private xrGrab: { active: Object3D | null; offset: Vector3; ready: boolean } = { active: null, offset: new Vector3(), ready: false };
@@ -533,7 +537,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   private async prepare(root: Object3D, textures: readonly Texture[]): Promise<void> {
     for (const t of textures) this.renderer.initTexture(t);
     await yieldToMain();
-    await this.renderer.compileAsync(root, this.camera, this.scene);
+    await linkInBackground(this.renderer, () => this.renderer.compileAsync(root, this.camera, this.scene));
   }
 
   /**
@@ -549,7 +553,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     emitters.ownClock = ownClip;
     emitters.setEnabled($effects.get());
     for (const t of emitters.textures()) this.renderer.initTexture(t);
-    await this.renderer.compileAsync(emitters.root, this.camera, this.scene);
+    await linkInBackground(this.renderer, () => this.renderer.compileAsync(emitters.root, this.camera, this.scene));
   }
 
   /**
@@ -624,7 +628,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     geometry.setAttribute("normal", new BufferAttribute(new Float32Array(9), 3));
     geometry.setAttribute("uv", new BufferAttribute(new Float32Array(6), 2));
     geometry.setAttribute("uv1", new BufferAttribute(new Float32Array(6), 2));
-    geometry.setAttribute("skinIndex", new BufferAttribute(new Uint8Array(12), 4));
+    geometry.setAttribute("skinIndex", boneIndices(new Uint16Array(12)));
     geometry.setAttribute("skinWeight", new BufferAttribute(new Float32Array(12), 4));
     const skinned = (material: Material) => {
       const mesh = new SkinnedMesh(geometry, material);
@@ -1010,7 +1014,15 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
 
   // --- Framing ------------------------------------------------------------
 
+  /**
+   * Each visible part's box, by skinning its vertices on the CPU: 15 to 25 ms on a body, and it
+   * runs every time the camera steps back. It is kept until what shows or what plays changes.
+   */
   private partBoxes(figure: Figure): Box3[] {
+    let key = this.director?.currentId ?? "";
+    for (const part of figure.parts) key += part.mesh.visible ? "1" : "0";
+    const kept = this.boxesKept;
+    if (kept && kept.figure === figure && kept.key === key) return kept.boxes;
     figure.poseNow();
     const boxes: Box3[] = [];
     for (const part of figure.parts) {
@@ -1018,8 +1030,11 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
       const box = meshBox(part.mesh as SkinnedMesh);
       if (!box.isEmpty()) boxes.push(box);
     }
+    this.boxesKept = { figure, key, boxes };
     return boxes;
   }
+
+  private boxesKept: { figure: Figure; key: string; boxes: Box3[] } | null = null;
 
   centerModel(transition = false): void {
     const figure = this.figure;
@@ -1451,16 +1466,29 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   }
 
   private onHover(hash: number | null): void {
-    if (hash !== null && !this.outline && !this.outlineLoading && this.renderer) {
+    if (hash !== null && !this.outlineLoading && this.renderer && this.figure && this.outlineFor !== this.figure) {
+      // Its passes draw this figure into a frame of their own, which is another set of programs:
+      // they link before the hover shows, or the first one stops the page for 790 ms, measured.
       this.outlineLoading = true;
-      void import("./render/outline").then(({ OutlineRig }) => {
-        const size = this.renderer.getSize(_size2);
-        this.outline = new OutlineRig(this.renderer, this.scene, this.camera, size.x, size.y);
-        this.outlineLoading = false;
-        this.onHover($hoveredPart.get());
-      });
+      const figure = this.figure;
+      void import("./render/outline")
+        .then(async ({ OutlineRig }) => {
+          const size = this.renderer.getSize(_size2);
+          const rig = this.outline ?? new OutlineRig(this.renderer, this.scene, this.camera, size.x, size.y);
+          await rig.prepare(figure.root);
+          this.outline = rig;
+          this.outlineFor = figure;
+          this.outlineLoading = false;
+          this.onHover($hoveredPart.get());
+        })
+        .catch((e) => {
+          // No outline is a smaller thing than a broken hover: the row still works.
+          this.outlineLoading = false;
+          console.warn("[eclipse] no outline:", e);
+        });
       return;
     }
+    if (hash !== null && this.outlineFor !== this.figure) return;
     this.outline?.select(hash === null ? [] : this.partsOf(hash));
     this.invalidate();
   }
@@ -1556,7 +1584,7 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
     geometry.setAttribute("normal", new BufferAttribute(new Float32Array(9), 3));
     geometry.setAttribute("uv", new BufferAttribute(new Float32Array(6), 2));
     geometry.setAttribute("uv1", new BufferAttribute(new Float32Array(6), 2));
-    geometry.setAttribute("skinIndex", new BufferAttribute(new Uint8Array(12), 4));
+    geometry.setAttribute("skinIndex", boneIndices(new Uint16Array(12)));
     geometry.setAttribute("skinWeight", new BufferAttribute(new Float32Array(12), 4));
     const queue = [...CATALOGUE_PROGRAMS];
     const held: Material[] = (this.warmedPrograms = []);
@@ -1677,9 +1705,15 @@ export class EclipseEngine implements ViewerEngine, EngineDebug {
   private figureCells(): Promise<FigureCells> {
     this.cellsLoading ??= import("./render/cells").then(({ FigureCells }) => {
       this.cells = new FigureCells(this.opts.packBase);
+      this.cells.hold = this.cellsHold;
       return this.cells;
     });
     return this.cellsLoading;
+  }
+
+  holdCells(hold: () => boolean): void {
+    this.cellsHold = hold;
+    if (this.cells) this.cells.hold = hold;
   }
 
   // --- Export -------------------------------------------------------------

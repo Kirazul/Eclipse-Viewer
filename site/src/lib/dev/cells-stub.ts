@@ -6,6 +6,7 @@ const win = window as Window & { __figures?: Set<HTMLElement>; __posterAsks?: nu
 win.__figures ??= new Set();
 
 export class FigureCells {
+  hold: () => boolean = () => false;
   constructor(_base: string) {}
 
   async posterUrl(): Promise<string | null> {

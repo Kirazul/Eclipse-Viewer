@@ -16,7 +16,7 @@ import {
 import Notice from "./Notice.astro";
 import "../styles/loadout.css";
 import { catalog, FEATURED } from "../data/catalog";
-import { sprite, u } from "../lib/base";
+import { PACK_BASE, sprite, u } from "../lib/base";
 import { ALL_SLOTS, ARMOR_SLOTS, CHIP_ORDER, SLOT_LABEL, SLOT_RING, emptySprite, type SlotId } from "../lib/slots";
 
 interface Props {
@@ -203,11 +203,25 @@ const roomData = {
 </div>
 
 {/* Runs before the first paint: the tab, the browsed slot and the panel width come from the
-    URL and the last visit, so the page is right on its first frame. */}
-<script is:inline>
+    URL and the last visit, so the page is right on its first frame. It also starts what the
+    figure can't do without while the page's own code is still on its way: the model's manifest
+    and the texture transcoder, which start 1.5 s later otherwise. */}
+<script is:inline define:vars={{ packBase: PACK_BASE, basisBase: u("basis/"), featured: mountStage ? "" : FEATURED?.id ?? "" }}>
   (function () {
     var room = document.getElementById("room");
     var q = new URLSearchParams(location.search);
+    var early = function (href) {
+      var l = document.createElement("link");
+      l.rel = "preload";
+      l.as = "fetch";
+      l.crossOrigin = "anonymous";
+      l.href = href;
+      document.head.appendChild(l);
+    };
+    early(basisBase + "basis_transcoder.js");
+    early(basisBase + "basis_transcoder.wasm");
+    var body = featured && (q.get("body") || q.get("id") || featured);
+    if (body && /^[\w-]+$/.test(body)) early(packBase + "/models/" + body + "/manifest.json");
     var tab = q.get("tab") || room.dataset.defaultTab;
     if (["items", "sets", "customization", "loadout", "viewer"].indexOf(tab) < 0) tab = "items";
     room.dataset.tab = tab;

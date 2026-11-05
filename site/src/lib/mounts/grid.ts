@@ -4,12 +4,12 @@
  * loads pictures and nothing else: no engine and no model until a pointer rests on a card,
  * or a card has no baked poster yet, and only for that one, in the one context the page makes.
  */
-import { POSTER, packUrl, paths, type MountEntry } from "@eclipse/format";
+import { POSTER, packUrl, paths, sheetRect, type MountEntry } from "@eclipse/format";
 import { art, PACK_BASE, u } from "../base";
 import { FillQueue, type DrawPoster } from "../grid/fill";
 import { CARD, FRAME, fitPage } from "../grid/fit";
 import { LiveCell, type AddCell } from "../grid/live";
-import { Fling, VirtualRows, setImage } from "../grid/virtual";
+import { Fling, VirtualRows, canUseSheets, justTouched, pointerIntent, setImage } from "../grid/virtual";
 
 const scroller = document.getElementById("mount-scroll") as HTMLElement;
 const space = document.getElementById("mount-grid") as HTMLElement;
@@ -79,24 +79,28 @@ function bindCard(a: Card, m: MountEntry | undefined) {
   a.label.textContent = m.name;
   a.setAttribute("aria-label", m.name);
   // The name stands under the card: a tip only says what the card can't.
-  if (m.name.length > nameRoom) a.dataset.tip = m.name;
-  else delete a.dataset.tip;
   const colours = m.variants.length;
+  if (m.name.length > nameRoom || colours > 1) a.dataset.tip = m.name;
+  else delete a.dataset.tip;
+  if (colours > 1) a.dataset.tipSub = `${colours} colours`;
+  else delete a.dataset.tipSub;
   a.badge.hidden = colours < 2;
   a.badge.textContent = colours > 1 ? String(colours) : "";
-  a.badge.dataset.tip = `${colours} colours`;
   paintArt(a, m);
 }
 
 /** The baked poster, or the same picture drawn here. Until it lands: the empty card, its quiet ring. */
 function paintArt(a: Card, m: MountEntry) {
-  const poster = m.poster ? art(m.poster) : "";
+  // The page's sheet where there is one: one read for every card on it.
+  const sheet = canUseSheets ? m.sheet : undefined;
+  const key = sheet ? `objects/${sheet[0]}.webp` : m.poster;
+  const poster = key ? art(key) : "";
   if (fling.active) {
     if (a.poster.getAttribute("src") !== poster) setImage(a.poster, "");
     return;
   }
   if (poster) {
-    setImage(a.poster, poster);
+    setImage(a.poster, poster, sheet ? sheetRect(sheet[1], POSTER.cell) : undefined);
     return;
   }
   const v = m.variants[0];
@@ -108,9 +112,14 @@ function paintArt(a: Card, m: MountEntry) {
   });
 }
 
-const fling = new Fling(() => {
-  for (const r of rows.rows()) for (const a of r.cards) if (a.mount) paintArt(a, a.mount);
-});
+const fling = new Fling(
+  () => {
+    for (const r of rows.rows()) for (const a of r.cards) if (a.mount) paintArt(a, a.mount);
+    fill.pump();
+    afterScroll();
+  },
+  () => live.leave(),
+);
 
 const rows = new VirtualRows<Row>(
   () => {
@@ -136,9 +145,14 @@ const rows = new VirtualRows<Row>(
   },
 );
 
+/** The scroller's height and what it holds, as `layout` found them: a frame of scrolling measures nothing. */
+let viewH = 0;
+let contentH = 0;
+
 function layout(): boolean {
   const width = scroller.clientWidth;
   const height = scroller.clientHeight;
+  viewH = height;
   if (!width || !height) return false;
   // FitPage knows nothing of a name under the card, so the rows' names come off the height
   // first. A tile that only fits fewer rows than asked just leaves the difference spare.
@@ -157,17 +171,18 @@ function layout(): boolean {
   space.style.setProperty("--row-x", `${Math.floor((width - page.width) / 2)}px`);
   space.style.setProperty("--frame-over", `${page.cellW * FRAME.card.over}px`);
   space.style.setProperty("--frame-slice", `${page.cellW * FRAME.card.slice}px`);
-  space.style.height = `${rows.height(page.gap)}px`;
+  contentH = rows.height(page.gap);
+  space.style.height = `${contentH}px`;
   nameRoom = Math.floor((2 * (page.cellW + 16)) / 6.4);
   return perRow !== before;
 }
 
 function paint() {
   const top = scroller.scrollTop;
-  const view = scroller.clientHeight;
+  const view = viewH;
   fling.moved(top, view);
   rows.paint(top, view);
-  const max = scroller.scrollHeight - view;
+  const max = contentH - view;
   fadeTop.classList.toggle("show", top > 1);
   fadeBot.classList.toggle("show", max > 1 && top < max - 1);
 }
@@ -201,6 +216,7 @@ function theCells() {
   cells ??= import("@eclipse/engine/cells")
     .then(({ FigureCells }) => {
       const made = new FigureCells(PACK_BASE);
+      made.hold = () => fling.moving || justTouched();
       return { add: made.add.bind(made) as AddCell, draw: made.posterUrl.bind(made) as DrawPoster };
     })
     .catch((e) => {
@@ -211,12 +227,10 @@ function theCells() {
   return cells;
 }
 const live = new LiveCell(async () => (await theCells())?.add ?? null);
-const fill = new FillQueue(async () => (await theCells())?.draw ?? (async () => null));
+const fill = new FillQueue(async () => (await theCells())?.draw ?? (async () => null), 3, () => !fling.moving);
 
-const cardOf = (e: Event) => (e.target as Element).closest?.(".tile") as Card | null;
-space.addEventListener("pointerover", (e) => {
-  if (e.pointerType === "touch") return;
-  const a = cardOf(e);
+const afterScroll = pointerIntent(space, fling, (target) => {
+  const a = target.closest<Card>(".tile");
   const v = a?.mount?.variants[0];
   if (!a || !v) {
     live.leave();
@@ -250,6 +264,7 @@ space.addEventListener("click", () => {
 // --- Scrolling and the rest -----------------------------------------------------
 let queued = false;
 scroller.addEventListener("scroll", () => {
+  fling.scrolled();
   if (queued) return;
   queued = true;
   requestAnimationFrame(() => {

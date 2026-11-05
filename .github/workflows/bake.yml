@@ -17,6 +17,10 @@ on:
         description: "Re-bake even if the output already exists"
         type: boolean
         default: false
+      sheets:
+        description: "Pack each page of posters into one file, after a poster bake"
+        type: boolean
+        default: false
       redo:
         description: "Bake the scope's units again, writing only what changed: a manifest's fix costs a manifest's write. Force rewrites every object."
         type: boolean
@@ -51,7 +55,7 @@ jobs:
         with:
           path: work/tact
           key: tact-${{ hashFiles('packages/format/src/config.ts') }}
-      - run: pnpm bake catalog --upload
+      - run: pnpm bake catalog --upload ${{ inputs.sheets && '--sheets' || '' }}
       - id: plan
         run: pnpm bake plan --upload --scope "${{ inputs.scope }}" --shards "${{ inputs.shards }}" ${{ inputs.force && '--force' || '' }} ${{ inputs.redo && '--redo' || '' }} ${{ inputs.allow_partial && '--allow-partial' || '' }} --github-output "$GITHUB_OUTPUT"
 

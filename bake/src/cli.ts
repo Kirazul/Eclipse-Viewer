@@ -10,7 +10,7 @@ import { openStore } from "./store/store";
 
 /**
  * The cloud pipeline's commands, as .github/workflows/bake.yml calls them:
- *   pnpm bake catalog [--upload]
+ *   pnpm bake catalog [--upload] [--sheets]   (--sheets packs each page's posters into one file: after a poster bake)
  *   pnpm bake plan --scope S --shards N [--force|--redo] --github-output FILE
  *   pnpm bake run --scope S --shard I --shards N [--force|--redo] [--upload]
  *   pnpm bake report [--upload] [--shards N] [--github-summary FILE]
@@ -36,7 +36,7 @@ interface Args {
   flags: Map<string, string>;
 }
 
-const BOOLEAN = new Set(["upload", "force", "redo", "allow-partial"]);
+const BOOLEAN = new Set(["upload", "force", "redo", "allow-partial", "sheets"]);
 
 export function parseArgs(argv: string[]): Args {
   const flags = new Map<string, string>();
@@ -186,7 +186,7 @@ async function main(): Promise<void> {
   switch (args.command) {
     case "catalog": {
       const ctx = context(args);
-      await runCatalog(ctx);
+      await runCatalog(ctx, args.flags.has("sheets"));
       await (ctx.store as BudgetStore).flush();
       break;
     }

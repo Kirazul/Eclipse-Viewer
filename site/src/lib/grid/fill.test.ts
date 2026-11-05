@@ -25,6 +25,20 @@ function drawer() {
 }
 
 describe("FillQueue", () => {
+  test("nothing starts while the page is busy, and it starts from the top when it is free", async () => {
+    const d = drawer();
+    let free = false;
+    const q = new FillQueue(() => d.draw, 3, () => free);
+    for (let i = 0; i < 5; i++) q.ask(el(), `k${i}`, { bodyId: `b${i}` }, 200, 264, () => undefined);
+    await tick();
+    expect(d.open.length).toBe(0);
+    free = true;
+    q.pump();
+    await tick();
+    expect(d.open.map((o) => (o.spec as { bodyId: string }).bodyId)).toEqual(["b0", "b1", "b2"]);
+  });
+
+
   test("only a few at a time, top of the page first, and each card hears its own picture", async () => {
     const d = drawer();
     const q = new FillQueue(() => d.draw, 3);

@@ -77,9 +77,9 @@ export const CELLS = {
   /** Composite resolution divisor. One: a slot's cell looks at the figure as closely as the stage does. */
   compositeDivisor: 1,
   /** Items, composites and idle bodies kept for an instant re-hover: a thousand hovers stay bounded. */
-  keepItems: 24,
-  keepComposites: 8,
-  keepBodies: 3,
+  keepItems: 8,
+  keepComposites: 4,
+  keepBodies: 2,
 };
 
 /**

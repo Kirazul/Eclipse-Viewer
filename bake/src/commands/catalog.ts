@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import sharp from "sharp";
-import { BUILD, FORMAT_VERSION, type Catalog, type CatalogEntry, type ItemRow, type ItemShard, type ItemShardRef, type LineInfo, type MountEntry, type MountVariant, type RaceEntry, type SearchRow, type SetEntry, type SetManifest, type SlotId, paths } from "@eclipse/format";
+import { BUILD, FORMAT_VERSION, POSTER, type Catalog, type CatalogEntry, type ItemRow, type ItemShard, type ItemShardRef, type LineInfo, type MountEntry, type MountVariant, type RaceEntry, type SearchRow, type SetEntry, type SetManifest, type SlotId, paths } from "@eclipse/format";
 import type { BakeContext, BakeRecord } from "../bake/context";
 import { type RaceSpec, allRaces } from "../chr/races";
 import { byId, num } from "../db2/db2";
@@ -13,6 +13,7 @@ import { modelIdOfDisplay } from "../mounts/bake";
 import type { MountFamily } from "../mounts/scan";
 import type { Store } from "../store/store";
 import { decodeBlp } from "../tex/blp";
+import { packListSheets, packShardSheets } from "../posters/sheets";
 import { posterHash, posterUnitId } from "../posters/spec";
 import { lineScope, mountScope } from "./scope";
 
@@ -257,7 +258,7 @@ export function buildMounts(store: Store, families: readonly MountFamily[], reco
 }
 
 /** A body has a `model` when it passed, and a race when any of its bodies did. */
-async function applyBaked(store: Store, catalog: Catalog): Promise<Map<string, unknown>> {
+async function applyBaked(store: Store, catalog: Catalog, withSheets = false): Promise<Map<string, unknown>> {
   const files = new Map<string, unknown>();
   const records = await recordsOf(store);
   const linesRaw = await store.get(LINES_KEY);
@@ -276,12 +277,17 @@ async function applyBaked(store: Store, catalog: Catalog): Promise<Map<string, u
   catalog.lines = lines;
   catalog.itemShards = out.refs;
   catalog.setShards = [...sets].filter(([, l]) => l.length).map(([line, l]) => ({ line, key: paths.setShard(line), count: l.length }));
-  for (const [key, shard] of out.shards) files.set(key, shard);
-  for (const [line, list] of sets) if (list.length) files.set(paths.setShard(line), list);
-
   const mountsRaw = await store.get(MOUNTS_KEY);
   const mountScan = mountsRaw ? (JSON.parse(mountsRaw.toString("utf8")) as { families: MountFamily[]; excluded: Record<string, number> }) : { families: [], excluded: {} };
   const { entries: mounts, failed: mountsFailed } = buildMounts(store, mountScan.families, records);
+  // A sheet already made stays in, on every catalogue. Only `--sheets` makes new ones.
+  let sheets = await packShardSheets(store, out.shards.values(), withSheets);
+  for (const list of sets.values()) sheets += await packListSheets(store, list, POSTER.set, withSheets);
+  sheets += await packListSheets(store, mounts, POSTER.cell, withSheets);
+  if (sheets) log(`catalog: ${sheets} poster sheet(s) in the shards`);
+  for (const [key, shard] of out.shards) files.set(key, shard);
+  for (const [line, list] of sets) if (list.length) files.set(paths.setShard(line), list);
+
   catalog.mounts = mounts.slice(0, HOME_MOUNTS);
   catalog.mountCount = mounts.length;
   files.set(paths.mounts(), mounts);
@@ -387,7 +393,7 @@ async function writeScans(ctx: BakeContext): Promise<void> {
   await ctx.store.put(MOUNTS_KEY, Buffer.from(JSON.stringify({ families: mounts.families, excluded: mounts.excluded, mounts: mounts.mounts, displays: mounts.displays })));
 }
 
-export async function runCatalog(ctx: BakeContext): Promise<Catalog> {
+export async function runCatalog(ctx: BakeContext, withSheets = false): Promise<Catalog> {
   const races = await allRaces(ctx.db);
   const cut = await iconCutter(ctx);
   const entries: RaceEntry[] = [];
@@ -403,7 +409,7 @@ export async function runCatalog(ctx: BakeContext): Promise<Catalog> {
   // On a slow line the first piece that needs a donor reads them, and most never do.
   if (ctx.source.name === "cdn") await measureFit(ctx, await bodyTable(ctx));
   const catalog: Catalog = { formatVersion: FORMAT_VERSION, build: BUILD.version, generatedAt: new Date().toISOString(), races: entries, mounts: [], items: [] };
-  const files = await applyBaked(ctx.store, catalog);
+  const files = await applyBaked(ctx.store, catalog, withSheets);
   await publish(ctx.store, catalog, files);
   const bodyCount = entries.reduce((n, r) => n + r.bodies.length, 0);
   log(`catalog: ${entries.length} races, ${bodyCount} bodies, ${entries.flatMap((r) => r.bodies).filter((b) => b.model).length} baked; ${(catalog.lines ?? []).map((l) => `${l.id} ${l.items}/${l.sets}`).join(", ")}; ${catalog.mountCount ?? 0} mounts`);

@@ -475,7 +475,7 @@ a.body-tile:hover p { color: var(--accent-ink); }
 @keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
 
 .strip {
-  flex: none; height: 32px; margin-top: 7px; display: grid; align-items: center; column-gap: 4px;
+  flex: none; height: 32px; margin-top: 7px; display: grid; align-items: center; column-gap: 4px; grid-auto-flow: column; grid-auto-columns: 28px;
   grid-template-columns: 28px minmax(60px, 1fr) 28px 28px minmax(60px, 1.2fr) 38px;
 }
 .strip-btn {
@@ -506,8 +506,6 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .pane { position: absolute; inset: 0; display: none; flex-direction: column; min-height: 0; }
 [data-tab=items] .pane-browse, [data-tab=sets] .pane-browse,
 [data-tab=customization] .pane-custom, [data-tab=viewer] .pane-viewer { display: flex; }
-/* Sets is the same browser with the same geometry: the slot rows keep their room, so
-   nothing below them moves when the tab changes. */
 [data-kind=mount] .ring-col, [data-kind=mount] .ring-bottom, [data-kind=mount] [data-tab-btn]:not([data-tab-btn=viewer]) { visibility: hidden; }
 /* Which chips exist comes with the catalogue. Until it does they keep their room, unseen:
    an invisible chip moving is not a layout shift, and the rows below them don't move at all. */
@@ -534,6 +532,8 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .mount-wrap { flex: 1; min-height: 0; position: relative; }
 .mount-scroll { position: absolute; inset: 0; }
 .mount-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
+/* Sets is the same browser with the same geometry: the slot rows keep their room, so
+   nothing below them moves when the tab changes. */
 [data-tab=sets] .only-items { visibility: hidden; }
 [data-tab=items] .only-sets { display: none !important; }
 .browse-chips { position: relative; flex: none; }
@@ -548,7 +548,7 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .browse-facets { margin-bottom: 10px; gap: 5px; }
 .grid-wrap { flex: 1; min-height: 0; position: relative; margin-top: 24px; }
 .grid-scroll { position: absolute; inset: 0; }
-.grid-space { position: relative; width: 100%; }
+.grid-space { position: relative; width: 100%; contain: layout style; }
 .grid-row { position: absolute; left: var(--row-x, 0); top: 0; display: flex; gap: var(--tile-gap); will-change: transform; contain: layout style; }
 .grid-fade { position: absolute; left: 0; right: 0; height: 34px; pointer-events: none; opacity: 0; transition: opacity .08s linear; z-index: 3; }
 .grid-fade.top { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--base) 92%, transparent), transparent); }
@@ -558,7 +558,8 @@ a.body-tile:hover p { color: var(--accent-ink); }
 
 /* A card of the figure grid (UiKit.cpp DrawCard, TransmogItemModelTemplate): retail's black
    ground exactly the size of the tile, the picture on it, and the frame reaching past it.
-   The live canvas draws in the tile's rect, so it never covers the frame or the name. */
+   The live canvas is the tile's own child, under the frame: it scrolls with the card and
+   nothing it draws can land outside it. */
 .tile {
   position: relative; display: block; flex: none; width: var(--tile-w); height: var(--tile-h); padding: 0; background: none; border: 0; contain: layout style;
   isolation: isolate; color: var(--ink);
@@ -571,15 +572,17 @@ a.body-tile:hover p { color: var(--accent-ink); }
 @keyframes poster-in { from { opacity: 0; } to { opacity: 1; } }
 /* It goes over the first live frame, and comes back at once: the canvas clears as it does. */
 .tile.live .tile-poster { opacity: 0; transition: opacity .12s linear; }
-/* The empty card while its picture is on the way (DrawLoadingRing). A compositor's animation
-   that waits a moment, so what lands quickly never flashes one. */
+/* The empty card while its picture is on the way (DrawLoadingRing). It waits a moment, so what
+   lands quickly never flashes one. Only a card being drawn turns: a page of rings all running
+   costs the main thread a style pass every frame, 0.8 ms of it measured, and looks busy. */
 .tile-ring {
   left: 50%; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; opacity: 0; z-index: 1;
   border: 2px solid color-mix(in srgb, var(--faint) 22%, transparent); border-top-color: rgb(var(--accent-rgb) / .7);
-  animation: spin 1s linear infinite, ring-in .2s linear .25s forwards;
+  animation: ring-in .2s linear .25s forwards;
 }
+.tile.drawing .tile-ring { animation: spin 1s linear infinite, ring-in .2s linear .25s forwards; }
 @keyframes ring-in { to { opacity: .85; } }
-.tile-poster[data-ok] ~ .tile-ring, .tile.hide .tile-ring, .tile.no-picture .tile-ring { display: none; }
+.tile-poster[data-ok] ~ .tile-ring, .tile.hide .tile-ring, .tile.no-picture .tile-ring, .tile.live .tile-ring { display: none; }
 .tile-frame {
   z-index: 2; inset: calc(var(--frame-over, 0px) * -1); border: 1px solid var(--line); border-radius: 8px; transition: background-color .06s linear, border-color .06s linear;
 }
@@ -603,13 +606,22 @@ a.body-tile:hover p { color: var(--accent-ink); }
   white-space: normal; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; transition: color .06s linear;
 }
 .tile:hover .tile-name { color: var(--ink); }
+/* A set is named on its figure, along the foot of the card (UiMorph.cpp DrawCell); an item carries no text. */
+.tile.set .tile-name {
+  left: 1px; right: 1px; top: auto; bottom: 1px; height: auto; z-index: 2; display: block; padding: 18px 6px 7px; font-size: 13px; line-height: 16px; color: var(--ink);
+  white-space: nowrap; text-overflow: ellipsis; background: linear-gradient(to bottom, rgb(0 0 0 / 0), rgb(0 0 0 / .78));
+}
 .tile-badge {
   right: 4px; top: 4px; z-index: 3; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 4px; font-size: 11px; line-height: 17px; text-align: center; color: var(--ink-mid);
-  background: rgb(0 0 0 / .66); box-shadow: inset 0 0 0 1px rgb(var(--line-rgb) / .55); font-variant-numeric: tabular-nums; pointer-events: auto;
+  background: rgb(0 0 0 / .66); box-shadow: inset 0 0 0 1px rgb(var(--line-rgb) / .55); font-variant-numeric: tabular-nums;
 }
+/* It takes the pointer only while its card has it. One small thing in a list that takes the pointer
+   when the list doesn't makes every wheel scroll ask the main thread what is under it, measured:
+   a scroll then starts when the main thread is free, not when the wheel turns. */
 .tile-star {
-  left: 4px; top: 4px; width: 17px; height: 17px; display: none; place-content: center; color: var(--ink-mid); pointer-events: auto; z-index: 3;
+  left: 4px; top: 4px; width: 17px; height: 17px; display: none; place-content: center; color: var(--ink-mid); z-index: 3;
 }
+.tile:hover .tile-star { pointer-events: auto; }
 .tile-star svg { width: 14px; height: 14px; stroke-width: 2; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .8)); }
 .tile:hover .tile-star, .tile.fav .tile-star { display: grid; }
 .tile.fav .tile-star { color: #ffcc36; }
@@ -631,7 +643,9 @@ a.body-tile:hover p { color: var(--accent-ink); }
 .custom-group { display: flex; flex-direction: column; }
 .custom-main { min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .custom-tabs { flex: none; }
-.custom-foot { flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.custom-foot { position: relative; flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+/* The options' invisible scrollbar: what runs on past the foot fades instead of being cut in half. */
+.custom-foot::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 22px; pointer-events: none; background: linear-gradient(to top, color-mix(in srgb, var(--base) 92%, transparent), transparent); }
 .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .pill-row > .pill { flex: 1; min-width: 0; padding: 0 8px; }
 .race-columns { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 4px; }

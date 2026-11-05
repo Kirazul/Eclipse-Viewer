@@ -4,10 +4,11 @@
  * This file resolves and plans; nothing here changes what is on screen. The caller
  * applies a plan in one step, once everything in it can draw.
  */
-import { Group, Matrix4, Skeleton, Uint16BufferAttribute, type Bone, type Object3D, type SkinnedMesh, type Texture } from "three";
+import { Group, Matrix4, Skeleton, type Bone, type Object3D, type SkinnedMesh, type Texture } from "three";
 import { ownedGeosets, packUrl, paths, type AttachedPiece, type ItemManifest, type SlotId, type Vec3 } from "@eclipse/format";
 import { fetchBytes, fetchJson, isAbort } from "../net/fetchPack";
 import { ModelAssets, registerManifests, type LoadEnv } from "../model/assets";
+import { boneIndices } from "../model/loaders";
 import { textureStore, type Lease } from "../model/shared";
 import { boneIndex } from "../logic/pivots";
 import { Figure } from "../model/figure";
@@ -128,7 +129,7 @@ export function rebindCollection(piece: Figure, body: Figure): number {
           out[i * 4 + 2] = toBody[attr.getZ(i)]!;
           out[i * 4 + 3] = toBody[attr.getW(i)]!;
         }
-        mesh.geometry.setAttribute("skinIndex", new Uint16BufferAttribute(out, 4));
+        mesh.geometry.setAttribute("skinIndex", boneIndices(out));
         if (own !== bodySkeleton) own.dispose();
         mesh.bind(bodySkeleton, identity);
         piece.foreignSkeleton = bodySkeleton;

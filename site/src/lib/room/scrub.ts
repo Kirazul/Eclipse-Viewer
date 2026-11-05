@@ -1,8 +1,12 @@
 /**
  * The scrubbers, written from one requestAnimationFrame with no React render.
- * Each frame is a compare: the value is only touched when it moved.
+ * Each frame is a compare. Writing a range's value lays the page out and restyles it, a
+ * millisecond a time, measured, so a playing clip writes it thirty times a second at most:
+ * more than the eye gets from a thumb this small, and the same on any display.
  */
 import { $engine } from "./state";
+
+const WRITE_EVERY_MS = 33;
 
 interface Scrub {
   input: HTMLInputElement;
@@ -11,14 +15,16 @@ interface Scrub {
 }
 const scrubs = new Set<Scrub>();
 let running = false;
+let wroteAt = 0;
 
-function tick() {
+function tick(now: number) {
   if (!scrubs.size || document.hidden) {
     running = false;
     return;
   }
   const engine = $engine.get();
-  if (engine) {
+  if (engine && now - wroteAt >= WRITE_EVERY_MS) {
+    wroteAt = now;
     const duration = engine.getAnimationDuration();
     const v = duration > 0 ? engine.getCurrentAnimationTime() / duration : 0;
     for (const s of scrubs) {

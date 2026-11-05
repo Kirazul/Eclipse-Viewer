@@ -6,21 +6,18 @@
  * The grid is virtual (grid/virtual.ts), of figure cells only: baked posters on retail's
  * cards, and the one the pointer rests on comes alive, on the body on the stage.
  */
-import { POSTER, itemOfRow, packUrl, paths, posterFor, type ItemEntry, type ItemManifest, type ItemShard, type ItemShardRef, type LineInfo, type SetEntry, type SlotId } from "@eclipse/format";
+import { POSTER, itemOfRow, packUrl, paths, posterFor, sheetFor, sheetRect, type ItemEntry, type ItemManifest, type ItemShard, type ItemShardRef, type LineInfo, type SetEntry, type SlotId } from "@eclipse/format";
 import { art, PACK_BASE } from "../base";
 import { FillQueue, type DrawPoster } from "../grid/fill";
 import { CARD, FRAME, fitPage } from "../grid/fit";
 import { LiveCell } from "../grid/live";
-import { Fling, VirtualRows, setImage } from "../grid/virtual";
+import { Fling, VirtualRows, canUseSheets, justTouched, pointerIntent, setImage } from "../grid/virtual";
 import { hideTip, showTip } from "../tip";
 import { ARMOR_SLOTS, SLOT_LABEL } from "../slots";
 import { release, setSlot, wear, wearSet } from "./actions";
 import { hover, onStageFree, stageBusy, stageLanded } from "./hover";
 import { $loading } from "@eclipse/engine/stores";
 import { $body, $catalogState, $engine, $items, $mounts, $sets, $slot, $tab, $worn } from "./state";
-
-/** A set's name stands under its card, two lines of it, and nothing below ever moves. */
-const SET_LABEL = 38;
 
 type Cell =
   | { kind: "hide"; slot: SlotId }
@@ -84,7 +81,7 @@ async function loadShard(ref: ItemShardRef) {
     const res = await fetch(packUrl(PACK_BASE, ref.key));
     if (!res.ok) throw new Error(String(res.status));
     const shard = await res.json() as ItemShard;
-    const rows = shard.rows.map((r) => itemOfRow(r, shard.line, shard.slot));
+    const rows = shard.rows.map((r, i) => itemOfRow(r, shard.line, shard.slot, i, shard.sheets));
     for (const i of rows) if (!itemsById.has(i.id)) itemsById.set(i.id, i);
     shardRows.set(ref.key, rows);
     $items.set(rows);
@@ -203,14 +200,31 @@ const live = new LiveCell(async () => {
   return engine?.addFigureCell ? engine.addFigureCell.bind(engine) : null;
 });
 /** A card with no baked poster yet: the engine draws the same picture, a few at a time, after the stage's own load. */
-const fill = new FillQueue((): DrawPoster | null => {
-  const engine = $engine.get();
-  if ($loading.get() || stageBusy()) return null;
-  return engine?.figurePoster ? (spec, w, h) => engine.figurePoster(spec as never, w, h) : null;
-}, 1);
-const fling = new Fling(() => {
-  for (const r of rows.rows()) for (const t of r.tiles) if (t.cell) bindPoster(t, t.cell);
-});
+const fill = new FillQueue(
+  (): DrawPoster | null => {
+    const engine = $engine.get();
+    if ($loading.get() || stageBusy()) return null;
+    return engine?.figurePoster ? (spec, w, h) => engine.figurePoster(spec as never, w, h) : null;
+  },
+  3,
+  // Nothing is drawn for a grid nobody is looking at, or one on the move.
+  () => !fling.moving && gridShown(),
+);
+const gridShown = () => $tab.get() === "items" || $tab.get() === "sets";
+const fling = new Fling(
+  () => {
+    for (const r of rows.rows()) for (const t of r.tiles) if (t.cell) bindPoster(t, t.cell);
+    fill.pump();
+    afterScroll();
+  },
+  () => {
+    // The list is moving: nothing under the pointer is what the pointer went to.
+    hover(null);
+    live.leave();
+    // What a settled page asked for on the way to the next hover hasn't got a socket yet: it can go.
+    $engine.get()?.warmItems([], false);
+  },
+);
 
 function newTile(): TileEl {
   const t = document.createElement("button") as TileEl;
@@ -240,14 +254,16 @@ function bindPoster(t: TileEl, cell: Cell) {
   }
   const entry = cell.kind === "item" ? cell.item : cell.set;
   const bodyId = $body.get();
-  const key = posterFor(entry, bodyId);
+  // The page's sheet where there is one: one read for every card on it.
+  const sheet = canUseSheets ? sheetFor(entry, bodyId) : undefined;
+  const key = sheet ? `objects/${sheet[0]}.webp` : posterFor(entry, bodyId);
   const poster = key ? art(key) : "";
   // On the way past in a fling, a picture already there stays and a new one waits.
   if (fling.active) {
     if (t.poster.getAttribute("src") !== poster) setImage(t.poster, "");
     return;
   }
-  if (poster) setImage(t.poster, poster);
+  if (poster) setImage(t.poster, poster, sheet ? sheetRect(sheet[1], cell.kind === "set" ? POSTER.set : POSTER.cell) : undefined);
   else drawPoster(t, cell, entry.id, bodyId);
 }
 
@@ -267,6 +283,7 @@ function bind(t: TileEl, cell: Cell | undefined) {
   fill.drop(t);
   t.cell = cell;
   if (!cell) {
+    t.className = "tile";
     t.style.visibility = "hidden";
     setImage(t.poster, "");
     return;
@@ -323,10 +340,14 @@ const rows = new VirtualRows<RowEl>(
 const phone = matchMedia("(max-width: 767.98px)");
 const split = document.getElementById("split") as HTMLElement;
 function viewport() {
-  if (!phone.matches) return { top: scroller.scrollTop, view: scroller.clientHeight };
+  if (!phone.matches) return { top: scroller.scrollTop, view: viewH };
   const outer = split.getBoundingClientRect();
   return { top: outer.top - space.getBoundingClientRect().top, view: outer.height };
 }
+
+/** The scroller's height and what it holds, as `layout` found them: a frame of scrolling measures nothing. */
+let viewH = 0;
+let contentH = 0;
 
 function paint() {
   clearTimeout(warmTimer);
@@ -335,28 +356,28 @@ function paint() {
   fling.moved(top, view);
   rows.paint(top, view);
   if (phone.matches) return;
-  const max = scroller.scrollHeight - view;
+  const max = contentH - view;
   fadeTop.classList.toggle("show", top > 1);
   fadeBot.classList.toggle("show", max > 1 && top < max - 1);
 }
 
 function layout() {
   const width = scroller.clientWidth;
+  viewH = scroller.clientHeight;
   if (!width) return;
   const sets = setsTab();
   const k = sets ? CARD.setScale : 1;
   const frame = sets ? FRAME.set : FRAME.card;
-  const label = sets ? SET_LABEL : 0;
-  // A set is a whole figure with its name under it: two rows of them read better than three of slivers.
+  // A set is a whole figure with its name on it: two rows of them read better than three of slivers.
   const maxRows = sets ? CARD.setRows : CARD.rows;
   // A phone's column scrolls in the page, so what a page of cards fills is the room left under the stage.
   const height = phone.matches ? Math.max(360, innerHeight * 0.6) : scroller.clientHeight;
-  const fit = (w: number, h: number) => fitPage(w, Math.max(1, h - maxRows * label), CARD.w * k, CARD.h * k, CARD.gap * k, CARD.maxCells, maxRows);
+  const fit = (w: number, h: number) => fitPage(w, Math.max(1, h), CARD.w * k, CARD.h * k, CARD.gap * k, CARD.maxCells, maxRows);
   // A card's frame reaches past the card, and the scroller's edge would cut it off the first row.
   const over = Math.ceil(fit(width, height).cellW * frame.over);
   const page = fit(width - over * 2, height - over * 2);
   perRow = Math.max(1, page.cols);
-  rows.pitch = page.cellH + label + page.gap;
+  rows.pitch = page.cellH + page.gap;
   rows.offset = over;
   rows.overscan = 1;
   rows.rowCount = Math.ceil(cells.length / perRow);
@@ -366,7 +387,8 @@ function layout() {
   space.style.setProperty("--row-x", `${Math.floor((width - page.width) / 2)}px`);
   space.style.setProperty("--frame-over", `${page.cellW * frame.over}px`);
   space.style.setProperty("--frame-slice", `${page.cellW * frame.slice}px`);
-  space.style.height = `${rows.height(page.gap)}px`;
+  contentH = rows.height(page.gap);
+  space.style.height = `${contentH}px`;
 }
 
 function rebuildAll() {
@@ -496,9 +518,8 @@ function tipFor(cell: Cell) {
   return showTip(cell.set.name, `${n} piece${n === 1 ? "" : "s"}`, isWorn(cell) ? "Wearing" : undefined);
 }
 
-space.addEventListener("pointerover", (e) => {
-  if (e.pointerType === "touch") return;
-  const t = tileOf(e);
+const afterScroll = pointerIntent(space, fling, (target) => {
+  const t = target.closest<TileEl>(".tile");
   if (!t?.cell) {
     hover(null);
     hideTip();
@@ -507,7 +528,7 @@ space.addEventListener("pointerover", (e) => {
   }
   hoverCell(t.cell);
   liveFor(t, t.cell);
-  if ((e.target as Element).closest("[data-star]")) {
+  if (target.closest("[data-star]")) {
     showTip(stars.has((t.cell as { item: ItemEntry }).item?.id ?? "") ? "Starred" : "Star this", "It sorts to the front.");
   } else tipFor(t.cell);
 });
@@ -553,6 +574,7 @@ space.addEventListener("error", (e) => {
 
 let scrollQueued = false;
 const onScroll = () => {
+  fling.scrolled();
   if (scrollQueued) return;
   scrollQueued = true;
   requestAnimationFrame(() => {
@@ -777,7 +799,10 @@ export function startBrowser() {
   // What a body cannot wear is hidden on that body, and its posters are that body's sex.
   $body.listen(() => refresh(true));
   // The engine draws what isn't baked, once it is here and the stage has what it came for.
-  $engine.listen(() => setTimeout(() => fill.pump(), 0));
+  $engine.listen((engine) => {
+    engine?.holdCells(() => fling.moving || !gridShown() || justTouched());
+    setTimeout(() => fill.pump(), 0);
+  });
   $loading.listen((on) => { if (!on) fill.pump(); });
   onStageFree(() => {
     fill.pump();

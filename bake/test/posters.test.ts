@@ -1,6 +1,7 @@
+import { packListSheets, packShardSheets, packSheet } from "../src/posters/sheets";
 import { describe, expect, test } from "vitest";
 import sharp from "sharp";
-import { POSTER, itemOfRow, posterFor, toStraightAlpha, type ItemManifest, type ItemRow } from "@eclipse/format";
+import { POSTER, SHEET, itemOfRow, posterFor, sheetFor, sheetRect, toStraightAlpha, type ItemManifest, type ItemRow, type ItemShard, type SetEntry } from "@eclipse/format";
 import { buildMounts, buildSets, buildShards, type LineSnapshot } from "../src/commands/catalog";
 import { MEASURED, projectUnits } from "../src/commands/scope";
 import type { BakeRecord } from "../src/bake/context";
@@ -197,5 +198,82 @@ describe("the budget", () => {
     const p = projectUnits(units);
     expect(p.bytes).toBe(1000 * MEASURED.poster.bytes);
     expect(p.writes).toBeCloseTo(1000 * MEASURED.poster.writes, 6);
+  });
+});
+
+describe("a page of posters as one file", () => {
+  const poster = (r: number, g: number, b: number, w: number = POSTER.cell.width, h: number = POSTER.cell.height) =>
+    sharp({ create: { width: w, height: h, channels: 4, background: { r, g, b, alpha: 1 } } }).webp({ lossless: true }).toBuffer();
+  const memory = async (entries: Record<string, Buffer>) => {
+    const files = new Map(Object.entries(entries));
+    let writes = 0;
+    return {
+      files,
+      writes: () => writes,
+      store: {
+        name: "memory",
+        stat: async (k: string) => files.get(k)?.length ?? null,
+        get: async (k: string) => files.get(k) ?? null,
+        put: async (k: string, body: Uint8Array) => { writes++; files.set(k, Buffer.from(body)); },
+        list: async () => [...files.keys()],
+        remove: async (k: string) => { files.delete(k); },
+      } as never,
+    };
+  };
+
+  test("each poster stands in its slot, left to right, top to bottom", async () => {
+    const m = await memory({ "objects/a.webp": await poster(255, 0, 0), "objects/b.webp": await poster(0, 255, 0), "objects/c.webp": await poster(0, 0, 255) });
+    const keys = ["objects/a.webp", undefined, "objects/b.webp", ...new Array(6).fill(undefined), "objects/c.webp"];
+    const hash = await packSheet(m.store, keys, POSTER.cell, true);
+    const { data, info } = await sharp(m.files.get(`objects/${hash}.webp`)!).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect(info.width).toBe(SHEET.cols * POSTER.cell.width);
+    expect(info.height).toBe(SHEET.rows * POSTER.cell.height);
+    const at = (slot: number) => {
+      const r = sheetRect(slot, POSTER.cell);
+      const i = ((r.y + 50) * info.width + r.x + 50) * 4;
+      return [...data.subarray(i, i + 4)];
+    };
+    expect(at(0)[0]).toBeGreaterThan(200);
+    expect(at(1)[3]).toBe(0);
+    expect(at(2)[1]).toBeGreaterThan(200);
+    expect(at(9)[2]).toBeGreaterThan(200);
+  });
+
+  test("named by what it holds: nothing changed, nothing written; and only --sheets makes one", async () => {
+    const m = await memory({ "objects/a.webp": await poster(255, 0, 0) });
+    expect(await packSheet(m.store, ["objects/a.webp"], POSTER.cell, false)).toBe("");
+    expect(m.writes()).toBe(0);
+    const made = await packSheet(m.store, ["objects/a.webp"], POSTER.cell, true);
+    expect(m.writes()).toBe(1);
+    expect(await packSheet(m.store, ["objects/a.webp"], POSTER.cell, false)).toBe(made);
+    expect(await packSheet(m.store, ["objects/a.webp"], POSTER.cell, true)).toBe(made);
+    expect(m.writes()).toBe(1);
+  });
+
+  test("a shard's rows find their page and slot, each body its own", async () => {
+    const m = await memory({ "objects/a.webp": await poster(255, 0, 0), "objects/b.webp": await poster(0, 255, 0) });
+    const rows: ItemRow[] = Array.from({ length: 40 }, (_, i) => [1000 + i, `Item ${i}`, "", "", 0, null, i === 35 ? "" : "a", i === 3 ? "b" : undefined] as ItemRow);
+    const shard: ItemShard = { line: "midnight", slot: "head", rows };
+    await packShardSheets(m.store, [shard], true);
+    expect(shard.sheets!.male).toHaveLength(2);
+    expect(shard.sheets!.female).toHaveLength(2);
+    const third = itemOfRow(rows[3]!, "midnight", "head", 3, shard.sheets);
+    expect(third.sheet).toEqual([shard.sheets!.male[0], 3]);
+    expect(third.sheetFemale).toEqual([shard.sheets!.female![0], 3]);
+    const late = itemOfRow(rows[33]!, "midnight", "head", 33, shard.sheets);
+    expect(late.sheet).toEqual([shard.sheets!.male[1], 1]);
+    // No poster, no slot, whatever page it falls on.
+    expect(itemOfRow(rows[35]!, "midnight", "head", 35, shard.sheets).sheet).toBeUndefined();
+  });
+
+  test("sets and mounts carry their own place", async () => {
+    const m = await memory({ "objects/a.webp": await poster(255, 0, 0, POSTER.set.width, POSTER.set.height) });
+    const list = Array.from({ length: 33 }, (_, i) => ({ id: `s${i}`, poster: "objects/a.webp" })) as never as SetEntry[];
+    await packListSheets(m.store, list, POSTER.set, true);
+    expect(list[0]!.sheet![1]).toBe(0);
+    expect(list[31]!.sheet![1]).toBe(31);
+    expect(list[32]!.sheet![1]).toBe(0);
+    expect(list[32]!.sheet![0]).not.toBe(list[0]!.sheet![0]);
+    expect(sheetFor(list[0]!, "human-female")).toEqual(list[0]!.sheet);
   });
 });

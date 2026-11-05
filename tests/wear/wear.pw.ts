@@ -10,6 +10,11 @@ import { OUT, PACKS, REAL, SLOTS, clean, frames, openStage, pct, sampleItems, sa
 // --- Stale ---------------------------------------------------------------------------------
 
 async function tileAt(page: Page, i: number) {
+  // A slot's list comes over the network: wait for its cards, not for a moment.
+  await page.waitForFunction(() => [...document.querySelectorAll<HTMLElement>(".tile")].some((t) => {
+    const r = t.getBoundingClientRect();
+    return !t.classList.contains("hide") && t.style.visibility !== "hidden" && r.width > 0 && r.top >= 0 && r.bottom <= innerHeight;
+  }), undefined, { timeout: 60_000 });
   const box = await page.evaluate((n) => {
     const list = [...document.querySelectorAll<HTMLElement>(".tile")]
       .filter((t) => !t.classList.contains("hide") && t.style.visibility !== "hidden")
@@ -39,7 +44,8 @@ const settled = (page: Page) =>
 test("hover, click, sets, ring, body: after every step the figure holds exactly what is asked for", async ({ page }) => {
   const errors = await openStage(page);
   await page.locator(".tabs [data-tab-btn='items']").click();
-  await page.waitForSelector(".tile", { timeout: 30_000 });
+  // The figure comes first and the catalogue after it: the Hide card alone is not a list yet.
+  await page.waitForFunction(() => document.querySelectorAll(".grid-row:not([hidden]) .tile:not(.hide)").length > 8, undefined, { timeout: 30_000 });
 
   // Several items, fast: the last one stands.
   for (const i of [2, 3, 4, 5, 6, 7]) {
@@ -448,7 +454,8 @@ test("hover to figure on the real grid: budgets, split, and no long stall", asyn
   };
 
   await page.locator(".tabs [data-tab-btn='items']").click();
-  await page.waitForSelector(".tile", { timeout: 30_000 });
+  // The figure comes first and the catalogue after it: the Hide card alone is not a list yet.
+  await page.waitForFunction(() => document.querySelectorAll(".grid-row:not([hidden]) .tile:not(.hide)").length > 8, undefined, { timeout: 30_000 });
   const fresh: number[] = [];
   const again: number[] = [];
   const long: number[] = [];

@@ -88,7 +88,11 @@ test.describe("navigation", () => {
     await mockPacks(page);
     await page.goto("./");
     for (const [name, url] of [["Wardrobe", /wardrobe\/$/], ["Mounts", /mounts\/$/], ["Settings", /settings\/$/], ["Home", /Eclipse-Viewer\/$/]] as const) {
-      if (isMobile) await page.locator("#menu-btn").click();
+      // The menu opens from the page's own script, which runs when the page has loaded.
+      if (isMobile) {
+        await page.waitForLoadState("load");
+        await page.locator("#menu-btn").click();
+      }
       await page.locator(".rail-nav").getByRole("link", { name }).click();
       await expect(page).toHaveURL(url);
       await expect(page.locator(".nav-item.on")).toHaveText(name);

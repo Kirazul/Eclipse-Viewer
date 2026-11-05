@@ -6,6 +6,7 @@
  * Everything except catalog/ and models/<id>/manifest.json is content-hashed and
  * served as immutable.
  */
+import { SHEET, type SheetSlot } from "./poster";
 
 export const FORMAT_VERSION = 1;
 
@@ -341,6 +342,9 @@ export interface CatalogEntry {
   poster?: string;
   /** The same on a female body, where a poster depends on the body worn. Absent: `poster` stands for both. */
   posterFemale?: string;
+  /** Its place in a page's sheet, when one is baked: one read for a whole page of cards. */
+  sheet?: SheetSlot;
+  sheetFemale?: SheetSlot;
   /** Present when baked. An entry without a model is not listed by the site. */
   model?: string;
   group?: string;
@@ -401,17 +405,24 @@ export interface ItemShard {
   line: string;
   slot: SlotId;
   rows: ItemRow[];
+  /** The sheets of its rows' posters, one per `SHEET.count` rows, by object hash. Empty: none for those rows. */
+  sheets?: { male: string[]; female?: string[] };
 }
 
 /** Expands a shard row into the entry the browser works with. */
-export function itemOfRow(row: ItemRow, line: string, slot: SlotId): ItemEntry {
+export function itemOfRow(row: ItemRow, line: string, slot: SlotId, index = 0, sheets?: ItemShard["sheets"]): ItemEntry {
   const [display, name, icon, facet, entry, notOn, poster, posterFemale] = row;
+  const page = Math.floor(index / SHEET.count);
+  const at = index % SHEET.count;
+  const male = poster ? sheets?.male[page] : "";
+  const female = posterFemale || poster ? sheets?.female?.[page] : "";
   const id = `item-${display}`;
   const key = icon ? `objects/${icon}.webp` : "";
   return {
     id, name, circle: key, tile: "", model: paths.item(id), slot, line, icon: key,
     ...(facet ? { facet } : {}), ...(entry ? { entry } : {}), ...(notOn?.length ? { notOn } : {}),
     ...(poster ? { poster: `objects/${poster}.webp` } : {}), ...(posterFemale ? { posterFemale: `objects/${posterFemale}.webp` } : {}),
+    ...(male ? { sheet: [male, at] as SheetSlot } : {}), ...(female ? { sheetFemale: [female, at] as SheetSlot } : {}),
   };
 }
 

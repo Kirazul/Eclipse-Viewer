@@ -9,6 +9,25 @@ export const POSTER = {
   set: { width: 240, height: 316 },
 } as const;
 
+/**
+ * A page of posters as one file: r2.dev is HTTP/1.1, so 32 requests are six at a time, each with
+ * its own slow first byte. A sheet is one read. Slots run left to right, top to bottom, at the
+ * entry's poster size. See bake/src/posters/sheets.ts.
+ */
+export const SHEET = { cols: 8, rows: 4, count: 32 } as const;
+/** A sheet's object hash and the slot in it. */
+export type SheetSlot = [hash: string, at: number];
+
+/** The sheet for this body, as `posterFor` picks its poster. */
+export function sheetFor(entry: { sheet?: SheetSlot; sheetFemale?: SheetSlot }, bodyId: string): SheetSlot | undefined {
+  return bodyId.endsWith("-female") ? entry.sheetFemale ?? entry.sheet : entry.sheet ?? entry.sheetFemale;
+}
+
+/** Where a slot stands in its sheet, in the sheet's own pixels. */
+export function sheetRect(at: number, size: { width: number; height: number }): { x: number; y: number; width: number; height: number } {
+  return { x: (at % SHEET.cols) * size.width, y: Math.floor(at / SHEET.cols) * size.height, width: size.width, height: size.height };
+}
+
 /** The poster for this body: the sex that matches, or the one there is. */
 export function posterFor(entry: { poster?: string; posterFemale?: string }, bodyId: string): string | undefined {
   return bodyId.endsWith("-female") ? entry.posterFemale ?? entry.poster : entry.poster ?? entry.posterFemale;

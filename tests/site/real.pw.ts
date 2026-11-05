@@ -251,17 +251,15 @@ test.describe("with the real engine and packs", () => {
       const poster = card.querySelector<HTMLElement>(".tile-poster")!;
       const canvas = document.querySelector<HTMLCanvasElement>("canvas[data-eclipse-cells]")!;
       const gl = canvas.getContext("webgl2") as WebGL2RenderingContext;
-      const r = card.getBoundingClientRect();
-      const w = Math.round(r.width);
-      const h = Math.round(r.height);
-      const k = canvas.width / canvas.clientWidth;
-      const px = new Uint8Array(4 * Math.ceil(w * k) * Math.ceil(h * k));
       const log: { live: boolean; opacity: number; solid: number }[] = [];
       (window as unknown as { __card: HTMLElement }).__card = card;
       let run = true;
       const tick = () => {
         if (!run) return;
-        gl.readPixels(Math.round(r.left * k), canvas.height - Math.round(r.bottom * k), Math.ceil(w * k), Math.ceil(h * k), gl.RGBA, gl.UNSIGNED_BYTE, px);
+        // The canvas stands in the card it draws, or it holds nothing of this card at all.
+        const here = canvas.parentElement === card;
+        const px = new Uint8Array(4 * (here ? canvas.width * canvas.height : 1));
+        if (here) gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, px);
         let n = 0;
         for (let i = 3; i < px.length; i += 16) if (px[i]! > 16) n++;
         log.push({ live: card.classList.contains("live"), opacity: Number(getComputedStyle(poster).opacity), solid: n });

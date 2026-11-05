@@ -37,9 +37,16 @@ $worn.set(url.look);
 $lookText.set(url.choices);
 if (url.scene) $scene.set(url.scene);
 
-// --- The retail sprites -------------------------------------------------------
-// One atlas, one read per visitor. Until it is cut the frames are the CSS-drawn ones.
-void loadUiAtlas(data.sprites);
+// --- The figure comes first ------------------------------------------------------
+// r2.dev is HTTP/1.1, six sockets and a slow first byte each, on whatever line the visitor has.
+// The sprites, the catalogue and the panels' code are 650 KB the figure doesn't need, so they
+// start when it stands. On a slow line it may take a while, and while its bytes are coming every
+// socket they'd take is one it would wait for. So they also start when the figure has gone quiet
+// for this long, and at the latest after this long: a list is worth having with no figure.
+const FIGURE_QUIET_MS = 6000;
+const FIGURE_LONGEST_MS = 25_000;
+let stageStood: () => void = () => undefined;
+const figureUp = new Promise<void>((resolve) => { stageStood = resolve; });
 
 // --- The engine ---------------------------------------------------------------
 let firstClip: string | null = null;
@@ -67,6 +74,7 @@ async function loadBody(id: string) {
   }
   // A link's look is worn before the body joins the stage, so it never shows another first.
   await engine.loadModel(id, $lookText.get() || undefined);
+  stageStood();
   engine.warmPrograms();
   if (!firstClip) firstClip = $currentClip.get();
   await applyLook();
@@ -100,6 +108,8 @@ async function bootEngine() {
     await loadBody(body);
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
+  } finally {
+    stageStood();
   }
 }
 
@@ -280,10 +290,13 @@ attachScrub(stripScrub);
   const ROOM_MIN = 244;
   const sideMin = (w: number) => Math.min(w * 0.5, 360);
   const save = (v: string) => { try { localStorage.setItem("room-width", v); } catch { /* private window */ } };
+  let width = "";
   const setWidth = (px: number) => {
     split.classList.remove("collapsed");
-    split.style.setProperty("--room-w", `${Math.round(px)}px`);
-    save(String(Math.round(px)));
+    width = String(Math.round(px));
+    split.style.setProperty("--room-w", `${width}px`);
+    // A drag writes it when it lets go: storage is a synchronous write, on the frame's own time.
+    if (!split.classList.contains("dragging")) save(width);
   };
   const collapse = () => {
     split.classList.add("collapsed");
@@ -312,7 +325,10 @@ attachScrub(stripScrub);
     if (side < min / 2) collapse();
     else setWidth(Math.min(Math.max(ROOM_MIN, want), total - min));
   });
-  const end = () => split.classList.remove("dragging");
+  const end = () => {
+    if (split.classList.contains("dragging") && width && !split.classList.contains("collapsed")) save(width);
+    split.classList.remove("dragging");
+  };
   handle.addEventListener("pointerup", end);
   handle.addEventListener("pointercancel", end);
   handle.addEventListener("dblclick", reset);
@@ -346,23 +362,41 @@ function loadPanels() {
   panels ??= import("../../components/panels/mount").then((m) => m.mountPanels());
   return panels;
 }
-if ($tab.get() === "customization" || $tab.get() === "loadout" || $tab.get() === "viewer") void loadPanels();
-else {
+const panelsWhenIdle = () => {
   const idle = (window as Window & { requestIdleCallback?: (f: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
   if (idle) idle(() => { void loadPanels(); }, { timeout: 2500 });
   else setTimeout(() => { void loadPanels(); }, 1500);
-}
+};
+// The page opened on a panel: that is what it came for.
+if ($tab.get() === "customization" || $tab.get() === "loadout" || $tab.get() === "viewer") void loadPanels();
 
 // --- Start ------------------------------------------------------------------------------
 startBrowser();
 if (!mountMode) startUrlSync(() => firstClip);
-void loadCatalog().then(() => {
-  // A link with a loadout code wears the code, and keeps everything in it.
-  if (url.code) void import("../share/live").then((m) => m.importCode(url.code!, false));
-  if (url.tryItem) void tryLink(url.tryItem);
-});
 $catalogState.listen(paintRing);
 void bootEngine();
+let restStarted = false;
+const afterFigure = () => {
+  if (restStarted) return;
+  restStarted = true;
+  clearTimeout(quiet);
+  stopListening();
+  // One atlas, one read per visitor. Until it is cut the frames are the CSS-drawn ones.
+  void loadUiAtlas(data.sprites);
+  void loadCatalog().then(() => {
+    // A link with a loadout code wears the code, and keeps everything in it.
+    if (url.code) void import("../share/live").then((m) => m.importCode(url.code!, false));
+    if (url.tryItem) void tryLink(url.tryItem);
+  });
+  panelsWhenIdle();
+};
+let quiet = setTimeout(afterFigure, FIGURE_QUIET_MS);
+const stopListening = $progress.listen(() => {
+  clearTimeout(quiet);
+  quiet = setTimeout(afterFigure, FIGURE_QUIET_MS);
+});
+setTimeout(afterFigure, FIGURE_LONGEST_MS);
+void figureUp.then(afterFigure);
 // A bare /viewer/?id= folds into the one address the room has.
 if (location.pathname.endsWith("/viewer/")) {
   $tab.notify?.();

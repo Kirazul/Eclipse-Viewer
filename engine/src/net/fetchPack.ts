@@ -11,7 +11,9 @@
  *    immutable and land in the HTTP cache anyway. Only a big one with much left is cut;
  *  - two asks for one URL are one request;
  *  - a failure the host can recover from (R2 answers a burst with 5xx, or drops a
- *    connection) is asked again rather than failing a wearable.
+ *    connection) is asked again rather than failing a wearable;
+ *  - so is a socket gone quiet: on a congested line one can sit for minutes with no byte
+ *    and no error, and a figure waiting on one file doesn't stand at all.
  */
 export class PackError extends Error {
   constructor(
@@ -20,6 +22,13 @@ export class PackError extends Error {
   ) {
     super(`pack ${url} answered ${status}`);
     this.name = "PackError";
+  }
+}
+
+/** A socket that went quiet. Asked again on its own count, and the same to anyone who sees it fail. */
+class Stalled extends PackError {
+  constructor(url: string) {
+    super(url, 408);
   }
 }
 
@@ -45,6 +54,10 @@ const SOCKETS = 6;
 const LOW_SOCKETS = 3;
 /** Waits before asking again. */
 const RETRY_MS = [300, 900];
+/** No byte for this long, and the socket is lost. r2.dev's slowest first byte seen is 2.5 s. */
+const STALL_MS = 10_000;
+/** How many times a quiet socket is asked again before it counts as a failure. */
+const STALLS = 4;
 /** With more than this left to come, a request nobody wants is cut, socket or not. */
 const WORTH_CUTTING = 256 * 1024;
 
@@ -60,6 +73,7 @@ interface Job {
   waiters: number;
   running: boolean;
   attempts: number;
+  stalls: number;
   received: number;
   finish: boolean;
   /** Counted as low priority while it holds its socket, whatever it has been raised to since. */
@@ -115,9 +129,10 @@ async function start(job: Job): Promise<void> {
     forget();
     job.resolve(bytes);
   } catch (err) {
-    const again = transient(err) && job.attempts < RETRY_MS.length && job.waiters > 0;
+    const lost = err instanceof Stalled;
+    const again = job.waiters > 0 && (lost ? job.stalls++ < STALLS : transient(err) && job.attempts < RETRY_MS.length);
     if (again) {
-      const wait = RETRY_MS[job.attempts++]!;
+      const wait = lost ? 0 : RETRY_MS[job.attempts++]!;
       job.received = 0;
       job.running = false;
       setTimeout(() => {
@@ -140,34 +155,57 @@ async function start(job: Job): Promise<void> {
 }
 
 async function read(job: Job): Promise<ArrayBuffer> {
-  const res = await fetch(job.url, {
-    signal: job.cut.signal,
-    priority: job.rank === RANK.high ? "high" : job.rank === RANK.low ? "low" : "auto",
-    credentials: "omit",
-  } as RequestInit);
-  if (!res.ok) throw new PackError(job.url, res.status);
-  if (!res.body) {
-    const all = await res.arrayBuffer();
-    for (const on of job.listeners) on(all.byteLength);
-    return all;
-  }
-  const reader = res.body.getReader();
-  let out = new Uint8Array(job.expected > 0 ? job.expected : 65536);
-  let used = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (used + value.length > out.length) {
-      const grown = new Uint8Array(Math.max(out.length * 2, used + value.length));
-      grown.set(out.subarray(0, used));
-      out = grown;
+  // This attempt's own line: a job that is cut stays cut, one that went quiet is asked again.
+  const line = new AbortController();
+  const cut = () => line.abort();
+  job.cut.signal.addEventListener("abort", cut, { once: true });
+  let stalled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const alive = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      stalled = true;
+      line.abort();
+    }, STALL_MS);
+  };
+  alive();
+  try {
+    // The default credentials: the only ones a <link rel=preload> can match, and cross-origin
+    // they send nothing either.
+    const res = await fetch(job.url, {
+      signal: line.signal,
+      priority: job.rank === RANK.high ? "high" : job.rank === RANK.low ? "low" : "auto",
+    } as RequestInit);
+    if (!res.ok) throw new PackError(job.url, res.status);
+    if (!res.body) {
+      const all = await res.arrayBuffer();
+      for (const on of job.listeners) on(all.byteLength);
+      return all;
     }
-    out.set(value, used);
-    used += value.length;
-    job.received = used;
-    for (const on of job.listeners) on(value.length);
+    const reader = res.body.getReader();
+    let out = new Uint8Array(job.expected > 0 ? job.expected : 65536);
+    let used = 0;
+    for (;;) {
+      alive();
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (used + value.length > out.length) {
+        const grown = new Uint8Array(Math.max(out.length * 2, used + value.length));
+        grown.set(out.subarray(0, used));
+        out = grown;
+      }
+      out.set(value, used);
+      used += value.length;
+      job.received = used;
+      for (const on of job.listeners) on(value.length);
+    }
+    return used === out.length ? out.buffer : out.buffer.slice(0, used);
+  } catch (err) {
+    throw stalled ? new Stalled(job.url) : err;
+  } finally {
+    clearTimeout(timer);
+    job.cut.signal.removeEventListener("abort", cut);
   }
-  return used === out.length ? out.buffer : out.buffer.slice(0, used);
 }
 
 /** One asker has gone. The request itself stops only if that costs nothing or saves much. */
@@ -212,7 +250,7 @@ export function fetchBytes(url: string, opts: FetchOptions = {}): Promise<ArrayB
     });
     // Everyone waiting may have left by the time it settles.
     done.catch(() => undefined);
-    job = { url, rank, group, seq: ++seq, expected: opts.expected ?? 0, listeners: [], waiters: 0, running: false, attempts: 0, received: 0, finish: opts.finish ?? false, onLowSocket: false, cut: new AbortController(), done, resolve, reject };
+    job = { url, rank, group, seq: ++seq, expected: opts.expected ?? 0, listeners: [], waiters: 0, running: false, attempts: 0, stalls: 0, received: 0, finish: opts.finish ?? false, onLowSocket: false, cut: new AbortController(), done, resolve, reject };
     jobs.set(url, job);
     queued.push(job);
   }

@@ -51,9 +51,9 @@ export interface OutfitChange {
 const COMPOSITE_CACHE = 6;
 const HOLD_MS = 100;
 const HOLD_LAST_MS = 300;
-/** Hovered items kept warm, and on top of them the items that were worn: about three whole sets. */
-const KEEP_HOVERED = 12;
-const KEEP_WORN = ((globalThis as { navigator?: { deviceMemory?: number } }).navigator?.deviceMemory ?? 8) < 4 ? 10 : 30;
+/** Hovered items kept warm, and on top of them the items that were worn: the last two whole sets, and memory that levels off. */
+const KEEP_HOVERED = 8;
+const KEEP_WORN = ((globalThis as { navigator?: { deviceMemory?: number } }).navigator?.deviceMemory ?? 8) < 4 ? 8 : 20;
 /** A set's pieces go in this order: what covers most of the figure is on it first. */
 const SLOT_ORDER: readonly SlotId[] = ["chest", "legs", "shoulder", "head", "hands", "feet", "back", "waist", "wrist", "tabard", "shirt", "mainhand", "offhand", "ranged"];
 

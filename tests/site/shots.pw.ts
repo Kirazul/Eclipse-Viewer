@@ -18,7 +18,8 @@ test.describe("reference shots", () => {
     await openRoom(page);
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${OUT}/01_items.png` });
-    await page.locator(".tile").nth(14).hover();
+    // Rows are recycled, and one may hold cards it has no room for: the first in DOM order need not show.
+    await page.locator(".grid-row:not([hidden]) .tile:not([hidden]):not(.hide)").nth(14).hover();
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${OUT}/02_items_hover.png` });
     await page.mouse.move(5, 5);

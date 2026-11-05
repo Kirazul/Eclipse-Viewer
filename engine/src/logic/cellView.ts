@@ -224,6 +224,94 @@ export function windowExtents(w: CellWindow, figureMinY: number, figureHeight: n
   return [cx - half, u - height / 2, -depth, cx + half, u + height / 2, depth];
 }
 
+/** A silhouette's pixels: drawn this strongly, or a glow this bright, as a poster's coverage counts it. */
+const SOLID = 24;
+/** Parts this close, a share of the frame's width, are one shape: a hoof under a leg, a flame off a wing. */
+const JOINED = 0.03;
+/** A part apart from the rest counts from this share of the largest. A storm orb far above a gryphon does not. */
+const COUNTS = 0.05;
+
+export interface PixelBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/**
+ * Where a picture's real shape reaches, in pixels. RGBA, premultiplied: an additive glow is
+ * colour with no alpha of its own, so its brightest channel counts for it. Null when it is
+ * empty. Runs on a small measuring frame, once per look, so it stays one pass over the pixels:
+ * the parts are found on a coarse grid of `JOINED`-sized blocks, each keeping its exact reach.
+ */
+export function silhouetteBounds(rgba: ArrayLike<number>, width: number, height: number): PixelBox | null {
+  const size = Math.max(1, Math.round(width * JOINED));
+  const cols = Math.ceil(width / size);
+  const rows = Math.ceil(height / size);
+  const blocks = new Int32Array(cols * rows * 5);
+  for (let y = 0, p = 0; y < height; y++) {
+    const row = (y / size) | 0;
+    for (let x = 0; x < width; x++, p += 4) {
+      if (rgba[p + 3]! < SOLID && rgba[p]! < SOLID && rgba[p + 1]! < SOLID && rgba[p + 2]! < SOLID) continue;
+      const b = (row * cols + ((x / size) | 0)) * 5;
+      if (blocks[b] === 0) {
+        blocks[b + 1] = x;
+        blocks[b + 2] = y;
+        blocks[b + 3] = x;
+        blocks[b + 4] = y;
+      } else {
+        if (x < blocks[b + 1]!) blocks[b + 1] = x;
+        if (y < blocks[b + 2]!) blocks[b + 2] = y;
+        if (x > blocks[b + 3]!) blocks[b + 3] = x;
+        if (y > blocks[b + 4]!) blocks[b + 4] = y;
+      }
+      blocks[b]!++;
+    }
+  }
+  const seen = new Uint8Array(cols * rows);
+  const parts: (PixelBox & { mass: number })[] = [];
+  const stack: number[] = [];
+  for (let start = 0; start < cols * rows; start++) {
+    if (seen[start] || blocks[start * 5] === 0) continue;
+    const part = { x0: width, y0: height, x1: -1, y1: -1, mass: 0 };
+    parts.push(part);
+    seen[start] = 1;
+    stack.push(start);
+    while (stack.length) {
+      const at = stack.pop()!;
+      const b = at * 5;
+      part.mass += blocks[b]!;
+      if (blocks[b + 1]! < part.x0) part.x0 = blocks[b + 1]!;
+      if (blocks[b + 2]! < part.y0) part.y0 = blocks[b + 2]!;
+      if (blocks[b + 3]! > part.x1) part.x1 = blocks[b + 3]!;
+      if (blocks[b + 4]! > part.y1) part.y1 = blocks[b + 4]!;
+      const col = at % cols;
+      const row = (at - col) / cols;
+      for (let v = Math.max(0, row - 1); v <= Math.min(rows - 1, row + 1); v++) {
+        for (let u = Math.max(0, col - 1); u <= Math.min(cols - 1, col + 1); u++) {
+          const next = v * cols + u;
+          if (!seen[next] && blocks[next * 5] !== 0) {
+            seen[next] = 1;
+            stack.push(next);
+          }
+        }
+      }
+    }
+  }
+  if (parts.length === 0) return null;
+  let most = 0;
+  for (const p of parts) if (p.mass > most) most = p.mass;
+  const box: PixelBox = { x0: width, y0: height, x1: -1, y1: -1 };
+  for (const p of parts) {
+    if (p.mass < most * COUNTS) continue;
+    if (p.x0 < box.x0) box.x0 = p.x0;
+    if (p.y0 < box.y0) box.y0 = p.y0;
+    if (p.x1 > box.x1) box.x1 = p.x1;
+    if (p.y1 > box.y1) box.y1 = p.y1;
+  }
+  return box;
+}
+
 // CreatureExtents in FigureMath.h: a posed vertex further from where the file put it than
 // a creature bends hangs on a bone nothing animates, and counts for nothing.
 const CREATURE_BEND = 0.6;
